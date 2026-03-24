@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "apiBaseUrl": "",
+  "pollIntervalMs": 20000,
+  "editorName": "行业二组"
+}

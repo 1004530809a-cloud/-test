@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>行业二组周报网页版</title>
+  <link rel="stylesheet" href="./weekly-report.css" />
+</head>
+<body>
+  <div class="report-shell">
+    <aside class="report-sidebar">
+      <div class="sidebar-head">
+        <p class="eyebrow">Weekly Briefing</p>
+        <h1>行业二组周报</h1>
+        <p class="sidebar-copy is-report-hidden">轻量汇报页，适合直属上级浏览。首页看关键数据，点击卡片即可跳到对应板块详情。</p>
+      </div>
+
+      <section class="sidebar-card">
+        <h2>数据导入</h2>
+        <div class="sidebar-actions">
+          <button id="sampleBtn" class="primary-btn" type="button">恢复示例数据</button>
+          <button id="generateFromExcelBtn" class="ghost-btn" type="button">用 Excel 重新生成</button>
+          <button id="printBtn" class="ghost-btn" type="button">打印 / 导出 PDF</button>
+          <button id="exportBtn" class="ghost-btn" type="button">导出当前 JSON</button>
+          <label class="upload-btn">
+            <span>导入 JSON</span>
+            <input id="importInput" type="file" accept=".json,application/json" />
+          </label>
+        </div>
+        <div class="excel-upload-grid">
+          <label class="field">
+            <span>确认订单 Excel</span>
+            <input id="confirmExcelInput" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" />
+          </label>
+          <label class="field">
+            <span>执行订单 Excel</span>
+            <input id="executeExcelInput" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" />
+          </label>
+        </div>
+        <p id="excelUploadHint" class="sidebar-hint">上传确认订单和执行订单后，网页会自动过滤“SPU类目”含“汽车”的行，再按最新口径生成数据。</p>
+      </section>
+
+      <section class="sidebar-card">
+        <h2>在线同步</h2>
+        <div class="online-sync-status">
+          <span id="onlineSyncBadge" class="status-badge status-offline">本地模式</span>
+          <p id="onlineSyncText" class="sidebar-hint">当前仍按本地 JSON / 本地缓存运行，低毛利原因不会多人实时同步。</p>
+          <p id="onlineSyncMeta" class="sidebar-hint online-sync-meta"></p>
+        </div>
+        <div class="sidebar-actions">
+          <button id="refreshOnlineBtn" class="ghost-btn" type="button">刷新在线数据</button>
+          <button id="clearCacheBtn" class="ghost-btn" type="button">清理本地缓存</button>
+        </div>
+      </section>
+
+      <section class="sidebar-card is-report-hidden">
+        <h2>基础信息</h2>
+        <label class="field">
+          <span>周报标题</span>
+          <input id="titleInput" type="text" />
+        </label>
+        <label class="field">
+          <span>统计周期</span>
+          <input id="periodInput" type="text" />
+        </label>
+        <label class="field">
+          <span>汇报对象</span>
+          <input id="audienceInput" type="text" />
+        </label>
+      </section>
+
+      <section class="sidebar-card is-report-hidden">
+        <h2>维护方式</h2>
+        <ul class="tips-list">
+          <li>平时可以直接改网页里的文案和表格。</li>
+          <li>多人使用时，建议维护一份固定 JSON 数据文件再统一导入。</li>
+          <li>后续接 Excel 时，只要字段固定，就可以脚本自动生成 JSON。</li>
+        </ul>
+      </section>
+
+      <nav class="sidebar-nav" aria-label="周报板块导航">
+        <a href="#overview-section">首页总览</a>
+        <a href="#core-section">核心经营数据</a>
+        <a href="#margin-section">低毛利与压价专项</a>
+        <a href="#risk-section">风险与待协调事项</a>
+      </nav>
+    </aside>
+
+    <main class="report-main">
+      <section id="overview-section" class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Industry Team 2</p>
+          <h2 id="heroTitle">行业二组周报</h2>
+          <div class="hero-meta">
+            <span id="heroPeriod"></span>
+            <span id="heroAudience"></span>
+          </div>
+          <p id="heroSummary" class="hero-summary is-report-hidden"></p>
+        </div>
+        <div class="hero-tags is-report-hidden">
+          <span>轻量汇报</span>
+          <span>固定结构</span>
+          <span>多人可维护</span>
+        </div>
+      </section>
+
+      <section class="overview-panel">
+        <div class="panel-head">
+          <div>
+            <p class="panel-kicker">Overview Metrics</p>
+            <h3>首页关键数据</h3>
+          </div>
+          <p class="overview-caption is-report-hidden">上排 SZA，下排非SZA；首页只保留直属上级最关心的对比结果。</p>
+        </div>
+        <div class="overview-tables">
+          <article class="overview-table-card">
+            <div class="table-card-head">
+              <h4>核心经营数据</h4>
+            </div>
+            <div class="table-wrap">
+              <table class="overview-matrix" id="coreOverviewTable">
+                <thead></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="overview-table-card">
+            <div class="table-card-head">
+              <h4>低毛利专项</h4>
+            </div>
+            <div class="table-wrap">
+              <table class="overview-matrix" id="marginOverviewTable">
+                <thead></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="overview-grid is-report-hidden">
+        <article class="panel panel-spotlight">
+          <div class="panel-head">
+            <p class="panel-kicker">Summary</p>
+            <h3>本周陈述</h3>
+          </div>
+          <div id="summaryList" class="summary-list"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <p class="panel-kicker">Highlights</p>
+            <h3>重点提示</h3>
+          </div>
+          <div id="highlightList" class="stack-list"></div>
+        </article>
+      </section>
+
+      <section id="core-section" class="panel detail-panel">
+        <div class="section-top">
+          <div class="panel-head">
+            <p class="panel-kicker">Core Business</p>
+            <h3>核心经营数据</h3>
+          </div>
+          <div class="section-actions" id="coreLinks"></div>
+        </div>
+
+        <div class="split-sections">
+          <article class="split-panel">
+            <div class="split-head">
+              <p class="panel-kicker">SZA</p>
+              <h4>SZA经营数据</h4>
+            </div>
+            <div class="mini-metrics" id="coreSzaMiniMetrics"></div>
+            <div class="table-wrap">
+              <table class="report-table" id="spuBreakdownTable">
+                <thead>
+                  <tr>
+                    <th>SPU类目</th>
+                    <th>订单数量</th>
+                    <th>压价覆盖率</th>
+                    <th>压价成功率</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div id="coreSzaNarratives" class="stack-list"></div>
+            <div id="spuInsightList" class="spu-insight-list"></div>
+          </article>
+
+          <article class="split-panel">
+            <div class="split-head">
+              <p class="panel-kicker">Non SZA</p>
+              <h4>非SZA经营数据</h4>
+              <p class="split-note">上方核心指标按除华为外全部订单汇总，下面仅单独展示重点客户 TOP5。</p>
+            </div>
+            <div class="mini-metrics" id="coreNonSzaMiniMetrics"></div>
+            <div class="table-wrap">
+              <table class="report-table" id="customerTable">
+                <thead>
+                  <tr>
+                    <th>重点客户TOP5摘录</th>
+                    <th>成交金额</th>
+                    <th>预估毛利额</th>
+                    <th>预估毛利率</th>
+                    <th>环比</th>
+                    <th>负责人</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div id="coreNonSzaNarratives" class="stack-list"></div>
+          </article>
+        </div>
+
+        <div class="raw-source" id="coreRawSource"></div>
+      </section>
+
+      <section id="margin-section" class="panel detail-panel">
+        <div class="section-top">
+          <div class="panel-head">
+            <p class="panel-kicker">Low Margin Focus</p>
+            <h3>低毛利专项</h3>
+          </div>
+          <div class="section-actions" id="marginLinks"></div>
+        </div>
+
+        <div class="mini-metrics" id="marginMiniMetrics"></div>
+
+        <div class="table-wrap">
+          <table class="report-table" id="reasonTable">
+            <thead>
+              <tr>
+                <th>原因分类</th>
+                <th>订单数</th>
+                <th>成交金额</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <div id="marginNarratives" class="stack-list"></div>
+        <div class="raw-source" id="marginRawSource"></div>
+      </section>
+
+      <section id="low-margin-orders" class="panel detail-panel">
+        <div class="section-top">
+          <div class="panel-head">
+            <p class="panel-kicker">Low Margin Orders</p>
+            <h3>低毛利订单反馈表</h3>
+          </div>
+          <div class="section-actions">
+            <button id="exportLowMarginExcelBtn" class="ghost-btn section-action-btn" type="button">导出反馈表 Excel</button>
+            <label class="upload-btn section-action-btn">
+              <span>导入已填写反馈表</span>
+              <input id="importLowMarginExcelInput" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" />
+            </label>
+          </div>
+        </div>
+        <p class="section-note">在下表“原因”列直接选择即可填写，填写后上方低毛利原因汇总会自动刷新。</p>
+
+        <div class="table-wrap">
+          <table class="report-table" id="lowMarginOrderTable">
+            <thead>
+              <tr>
+                <th>采购订单编号</th>
+                <th>广告主名称</th>
+                <th>SPU类目</th>
+                <th>执行价(含税)</th>
+                <th>预估订单毛利率</th>
+                <th>原因</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="risk-section" class="panel detail-panel">
+        <div class="section-top">
+          <div class="panel-head">
+            <p class="panel-kicker">Risk & Actions</p>
+            <h3>风险与待协调事项</h3>
+          </div>
+          <div class="section-actions" id="riskLinks"></div>
+        </div>
+
+        <div class="risk-intro is-report-hidden">
+          <p>这一块继续保留人工维护，重点写清当前进展、风险点、需协调事项和下周动作，不放进首页数据矩阵。</p>
+        </div>
+        <div class="risk-board" id="riskBoard"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="./xlsx.full.min.js"></script>
+  <script src="./exceljs.min.js"></script>
+  <script src="./weekly-report.js"></script>
+</body>
+</html>

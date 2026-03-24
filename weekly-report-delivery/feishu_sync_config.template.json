@@ -1,0 +1,43 @@
+{
+  "app_id": "cli_xxx",
+  "app_secret": "xxx",
+  "app_token": "bascnxxx",
+  "tables": {
+    "low_margin_feedback": "tblxxx",
+    "weekly_snapshot": "tblyyy"
+  },
+  "views": {
+    "low_margin_feedback": "",
+    "weekly_snapshot": ""
+  },
+  "fields": {
+    "low_margin_feedback": {
+      "key": "同步键",
+      "period": "周报周期",
+      "purchase_order_no": "采购订单编号",
+      "advertiser": "广告主名称",
+      "spu_category": "SPU类目",
+      "exec_price_tax": "执行价(含税)",
+      "gross_margin": "预估订单毛利率",
+      "reason": "原因",
+      "reason_editor": "原因修改人",
+      "reason_updated_at": "原因修改时间",
+      "sync_time": "同步时间"
+    },
+    "weekly_snapshot": {
+      "key": "同步键",
+      "period": "周报周期",
+      "title": "周报标题",
+      "sza_amount": "SZA成交金额",
+      "non_sza_amount": "非SZA成交金额",
+      "sza_margin": "SZA预估毛利率",
+      "non_sza_margin": "非SZA预估毛利率",
+      "low_margin_count": "低毛利订单数",
+      "low_margin_amount": "低毛利成交金额",
+      "filled_count": "已填写原因",
+      "unfilled_count": "未填写原因",
+      "reason_summary": "原因汇总",
+      "sync_time": "同步时间"
+    }
+  }
+}

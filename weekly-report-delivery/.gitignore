@@ -1,0 +1,4 @@
+runtime/
+__pycache__/
+*.pyc
+feishu_sync_config.json
