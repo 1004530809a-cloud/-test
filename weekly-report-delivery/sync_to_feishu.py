@@ -1,7 +1,9 @@
 import argparse
 import json
+import mimetypes
 import ssl
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from urllib import error, parse, request
@@ -34,6 +36,32 @@ def http_json(method: str, url: str, payload=None, headers=None):
                 break
             time.sleep(1.5 * (attempt + 1))
     raise RuntimeError(f"请求失败: {url}: {last_error}") from last_error
+
+
+def http_multipart(method: str, url: str, fields: dict[str, str], files: list[dict], headers=None):
+    boundary = f"----CodexBoundary{uuid.uuid4().hex}"
+    body = bytearray()
+    for name, value in fields.items():
+        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        body.extend(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"))
+        body.extend(str(value).encode("utf-8"))
+        body.extend(b"\r\n")
+    for file in files:
+        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        body.extend(
+            f'Content-Disposition: form-data; name="{file["field_name"]}"; filename="{file["filename"]}"\r\n'.encode("utf-8")
+        )
+        body.extend(f'Content-Type: {file["content_type"]}\r\n\r\n'.encode("utf-8"))
+        body.extend(file["content"])
+        body.extend(b"\r\n")
+    body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+
+    req_headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+    if headers:
+        req_headers.update(headers)
+    req = request.Request(url, data=bytes(body), headers=req_headers, method=method)
+    with request.urlopen(req, context=SSL_CONTEXT, timeout=60) as response:
+        return json.loads(response.read().decode("utf-8"))
 
 
 def get_tenant_access_token(app_id: str, app_secret: str) -> str:
@@ -81,7 +109,7 @@ def build_existing_map(app_token: str, table_id: str, access_token: str, key_fie
         if data.get("code") != 0:
             raise RuntimeError(f"读取记录失败: {data}")
         for item in data.get("data", {}).get("items", []):
-            fields = item.get("fields", {})
+            fields = item.get("fields") or {}
             record_key = str(fields.get(key_field, "")).strip()
             if record_key:
                 existing[record_key] = {
@@ -285,6 +313,45 @@ def sync_snapshot(data: dict, config: dict, access_token: str):
         update_record(config["app_token"], table_id, existing[record_key]["record_id"], access_token, fields)
     else:
         create_record(config["app_token"], table_id, access_token, fields)
+
+
+def get_root_folder_token(access_token: str) -> str:
+    data = http_json("GET", f"{API_ROOT}/drive/explorer/v2/root_folder/meta", headers={"Authorization": f"Bearer {access_token}"})
+    if data.get("code") != 0:
+        raise RuntimeError(f"获取飞书云空间根目录失败: {data}")
+    return str(data.get("data", {}).get("token") or "")
+
+
+def upload_pdf_to_feishu_drive(config: dict, access_token: str, filename: str, content: bytes) -> dict:
+    folder_token = str(config.get("drive_folder_token") or "").strip() or get_root_folder_token(access_token)
+    content_type = mimetypes.guess_type(filename)[0] or "application/pdf"
+    data = http_multipart(
+        "POST",
+        f"{API_ROOT}/drive/v1/files/upload_all",
+        fields={
+            "file_name": filename,
+            "parent_type": "explorer",
+            "parent_node": folder_token,
+            "size": str(len(content)),
+        },
+        files=[
+            {
+                "field_name": "file",
+                "filename": filename,
+                "content_type": content_type,
+                "content": content,
+            }
+        ],
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    if data.get("code") != 0:
+        raise RuntimeError(f"上传 PDF 到飞书失败: {data}")
+    result = data.get("data", {}) or {}
+    return {
+        "file_token": str(result.get("file_token") or ""),
+        "name": str(result.get("name") or filename),
+        "folder_token": folder_token,
+    }
 
 
 def main():

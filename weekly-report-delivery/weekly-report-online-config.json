@@ -2,5 +2,6 @@
   "enabled": true,
   "apiBaseUrl": "",
   "pollIntervalMs": 20000,
-  "editorName": "行业二组"
+  "editorName": "行业二组",
+  "snapshotButtonText": "保存周报快照到飞书"
 }

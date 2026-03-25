@@ -198,6 +198,7 @@ const runtime = {
   onlineMode: "offline",
   onlineConfig: null,
   saveInFlight: false,
+  snapshotSaveInFlight: false,
   lastSyncedAt: "",
   pollTimer: null
 };
@@ -218,6 +219,7 @@ const el = {
   onlineSyncBadge: document.getElementById("onlineSyncBadge"),
   onlineSyncText: document.getElementById("onlineSyncText"),
   onlineSyncMeta: document.getElementById("onlineSyncMeta"),
+  saveSnapshotBtn: document.getElementById("saveSnapshotBtn"),
   refreshOnlineBtn: document.getElementById("refreshOnlineBtn"),
   clearCacheBtn: document.getElementById("clearCacheBtn"),
   importLowMarginExcelInput: document.getElementById("importLowMarginExcelInput"),
@@ -294,6 +296,7 @@ function bindControls() {
   el.importInput.addEventListener("change", importDataFile);
   el.exportLowMarginExcelBtn.addEventListener("click", exportLowMarginExcel);
   el.importLowMarginExcelInput.addEventListener("change", importLowMarginExcel);
+  el.saveSnapshotBtn.addEventListener("click", saveSnapshotToFeishu);
   el.refreshOnlineBtn.addEventListener("click", async () => {
     if (!runtime.onlineEnabled) {
       alert("当前未开启在线同步配置。");
@@ -320,6 +323,9 @@ async function loadOnlineConfig() {
     runtime.onlineEnabled = true;
     runtime.onlineConfig = parsed;
     runtime.onlineMode = "online";
+    if (parsed.snapshotButtonText) {
+      el.saveSnapshotBtn.textContent = parsed.snapshotButtonText;
+    }
   } catch (error) {
     runtime.onlineEnabled = false;
     runtime.onlineMode = "offline";
@@ -353,13 +359,13 @@ function startOnlinePolling() {
   if (!runtime.onlineEnabled || runtime.pollTimer) return;
   const interval = Number(runtime.onlineConfig?.pollIntervalMs) || 20000;
   runtime.pollTimer = window.setInterval(() => {
-    if (runtime.saveInFlight || document.hidden) return;
+    if (runtime.saveInFlight || runtime.snapshotSaveInFlight || document.hidden) return;
     loadOnlineState(false);
   }, interval);
 }
 
 function updateOnlineSyncStatus(message = "", mode = "") {
-  const statusMode = mode || (runtime.onlineEnabled ? (runtime.saveInFlight ? "saving" : "online") : "offline");
+  const statusMode = mode || (runtime.onlineEnabled ? ((runtime.saveInFlight || runtime.snapshotSaveInFlight) ? "saving" : "online") : "offline");
   const badgeTextMap = {
     online: "在线同步中",
     saving: "保存中",
@@ -619,6 +625,9 @@ function buildReportData(confirmRows, executeRows, confirmName, executeName, con
           { label: "打开可填写反馈表", href: "#low-margin-orders" },
           ...(executeHref ? [{ label: "打开执行订单原表", href: executeHref }] : [])
         ],
+        exportHeaders: executeExportContext?.highlightedHeaders?.length
+          ? [...executeExportContext.highlightedHeaders]
+          : Object.keys(lowMarginOrders[0]?.exportFields || {}),
         miniMetrics: [
           { label: "低毛利订单数", value: lowMarginSummary.orderCount },
           { label: "低毛利成交金额", value: lowMarginSummary.amount },
@@ -841,13 +850,83 @@ function formatPercent(numerator, denominator) {
 
 function replaceState(next, options = {}) {
   const { persistLocal = true } = options;
+  const normalized = normalizeLoadedReportData(next);
   Object.keys(state).forEach((key) => delete state[key]);
-  Object.assign(state, next);
+  Object.assign(state, normalized);
   if (persistLocal) {
     persistStateToLocalCache();
   }
   syncInputsFromState();
   render();
+}
+
+function normalizeLoadedReportData(data) {
+  const next = JSON.parse(JSON.stringify(data || sampleData));
+  const margin = next.sections?.margin;
+  if (!margin) return next;
+
+  const seenOrderNos = new Set();
+  const orders = (margin.orders || [])
+    .filter((order) => {
+      const purchaseOrderNo = String(order?.purchaseOrderNo || "").trim();
+      const advertiser = String(order?.advertiser || "").trim();
+      if (!purchaseOrderNo || purchaseOrderNo === "--" || purchaseOrderNo === "示例订单") return false;
+      if (advertiser === "示例客户") return false;
+      if (seenOrderNos.has(purchaseOrderNo)) return false;
+      seenOrderNos.add(purchaseOrderNo);
+      return true;
+    })
+    .map((order) => ({
+      ...order,
+      purchaseOrderNo: String(order.purchaseOrderNo || "").trim(),
+      advertiser: String(order.advertiser || "").trim(),
+      spuCategory: String(order.spuCategory || "").trim(),
+      execPriceTax: String(order.execPriceTax || "").trim(),
+      grossMargin: String(order.grossMargin || "").trim(),
+      reason: String(order.reason || "").trim(),
+      reasonEditor: String(order.reasonEditor || "").trim(),
+      reasonUpdatedAt: String(order.reasonUpdatedAt || "").trim(),
+      exportFields: order.exportFields || {}
+    }));
+
+  margin.orders = orders;
+  margin.exportHeaders = (margin.exportHeaders || []).filter(Boolean);
+  if (!margin.exportHeaders.length && orders.length) {
+    margin.exportHeaders = Object.keys(orders.find((order) => Object.keys(order.exportFields || {}).length)?.exportFields || {});
+  }
+
+  const summary = summarizeLowMarginOrders(orders);
+  margin.miniMetrics = [
+    { label: "低毛利订单数", value: summary.orderCount },
+    { label: "低毛利成交金额", value: summary.amount },
+    { label: "已填写原因", value: summary.filledCount },
+    { label: "未填写原因", value: summary.unfilledCount }
+  ];
+  margin.reasons = summary.reasonRows;
+
+  if (Array.isArray(next.metrics) && next.metrics.length >= 7) {
+    next.metrics[4] = { section: "margin", label: "低毛利订单数", value: summary.orderCount, note: "执行订单中预估订单毛利率低于14%。" };
+    next.metrics[5] = { section: "margin", label: "低毛利成交金额", value: summary.amount, note: "来自执行价(含税)汇总。" };
+    next.metrics[6] = { section: "margin", label: "已填写原因", value: summary.filledCount, note: "人工填写后自动汇总。" };
+  }
+
+  if (margin.rawSource && orders.length) {
+    margin.rawSource.headers = ["采购订单编号", "广告主名称", "SPU类目", "执行价(含税)", "预估订单毛利率", "原因"];
+    margin.rawSource.rows = orders.slice(0, 10).map((order) => [
+      order.purchaseOrderNo,
+      order.advertiser,
+      order.spuCategory,
+      order.execPriceTax,
+      order.grossMargin,
+      order.reason
+    ]);
+  }
+
+  if (runtime.onlineEnabled && String(margin.feedbackFileHref || "").startsWith("file:")) {
+    margin.feedbackFileHref = "";
+  }
+
+  return next;
 }
 
 function render() {
@@ -1231,8 +1310,13 @@ function downloadBlob(content, filename) {
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = filename;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
   anchor.click();
-  URL.revokeObjectURL(url);
+  window.setTimeout(() => {
+    URL.revokeObjectURL(url);
+    anchor.remove();
+  }, 300);
 }
 
 function refreshLowMarginSummary() {
@@ -1251,7 +1335,7 @@ function refreshLowMarginSummary() {
 
 async function exportLowMarginExcel() {
   const feedbackFileHref = state.sections?.margin?.feedbackFileHref;
-  if (feedbackFileHref) {
+  if (feedbackFileHref && !String(feedbackFileHref).startsWith("file:")) {
     window.open(feedbackFileHref, "_blank");
     return;
   }
@@ -1267,59 +1351,111 @@ async function exportLowMarginExcel() {
 
   const highlightedHeaders = executeExportContext?.highlightedHeaders?.length
     ? executeExportContext.highlightedHeaders
-    : (state.sections?.margin?.exportHeaders || []);
+    : ((state.sections?.margin?.exportHeaders || []).length
+      ? state.sections.margin.exportHeaders
+      : Object.keys(orders.find((order) => Object.keys(order.exportFields || {}).length)?.exportFields || {}));
   if (!highlightedHeaders.length) {
-    alert("未找到执行订单中的黄色表头，请先重新上传并生成执行订单。");
+    alert("未找到可导出的执行订单表头，请先重新上传执行订单，或确认生成后的 JSON 含有导出字段。");
     return;
   }
 
-  const workbook = new ExcelJS.Workbook();
-  const worksheet = workbook.addWorksheet("低毛利订单反馈表", {
-    views: [{ state: "frozen", ySplit: 1 }]
-  });
-  const optionSheet = workbook.addWorksheet("原因选项");
-  optionSheet.state = "hidden";
+  const previousText = el.exportLowMarginExcelBtn.textContent;
+  el.exportLowMarginExcelBtn.disabled = true;
+  el.exportLowMarginExcelBtn.textContent = "导出中...";
 
-  LOW_MARGIN_REASONS.forEach((reason, index) => {
-    optionSheet.getCell(index + 1, 1).value = reason;
-  });
+  try {
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet("低毛利订单反馈表", {
+      views: [{ state: "frozen", ySplit: 1 }]
+    });
+    const optionSheet = workbook.addWorksheet("原因选项");
+    optionSheet.state = "hidden";
 
-  const headers = [...highlightedHeaders, "原因"];
-  headers.forEach((header, index) => {
-    const cell = worksheet.getCell(1, index + 1);
-    cell.value = header;
-    cell.style = cloneExcelJsStyle(executeExportContext?.headerStyles?.[header]) || cloneExcelJsStyle(DEFAULT_YELLOW_HEADER_STYLE);
-
-    const width = executeExportContext?.columnWidths?.[header]
-      || (header === "原因" ? 16 : Math.min(Math.max(header.length + 2, 10), 36));
-    worksheet.getColumn(index + 1).width = width;
-  });
-
-  orders.forEach((order, orderIndex) => {
-    const rowNumber = orderIndex + 2;
-    highlightedHeaders.forEach((header, headerIndex) => {
-      const cell = worksheet.getCell(rowNumber, headerIndex + 1);
-      cell.value = order.exportFields?.[header] ?? "";
-      cell.style = cloneExcelJsStyle(executeExportContext?.bodyStyles?.[header]) || cloneExcelJsStyle(DEFAULT_BODY_STYLE);
+    LOW_MARGIN_REASONS.forEach((reason, index) => {
+      optionSheet.getCell(index + 1, 1).value = reason;
     });
 
-    const reasonCell = worksheet.getCell(rowNumber, headers.length);
-    reasonCell.value = order.reason || "";
-    reasonCell.style = cloneExcelJsStyle(DEFAULT_BODY_STYLE);
-    reasonCell.dataValidation = {
-      type: "list",
-      allowBlank: true,
-      formulae: [`'原因选项'!$A$1:$A$${LOW_MARGIN_REASONS.length}`]
+    const headers = [...highlightedHeaders, "原因"];
+    headers.forEach((header, index) => {
+      const cell = worksheet.getCell(1, index + 1);
+      cell.value = header;
+      cell.style = cloneExcelJsStyle(executeExportContext?.headerStyles?.[header]) || cloneExcelJsStyle(DEFAULT_YELLOW_HEADER_STYLE);
+
+      const width = executeExportContext?.columnWidths?.[header]
+        || (header === "原因" ? 16 : Math.min(Math.max(header.length + 2, 10), 36));
+      worksheet.getColumn(index + 1).width = width;
+    });
+
+    orders.forEach((order, orderIndex) => {
+      const rowNumber = orderIndex + 2;
+      highlightedHeaders.forEach((header, headerIndex) => {
+        const cell = worksheet.getCell(rowNumber, headerIndex + 1);
+        cell.value = order.exportFields?.[header] ?? "";
+        cell.style = cloneExcelJsStyle(executeExportContext?.bodyStyles?.[header]) || cloneExcelJsStyle(DEFAULT_BODY_STYLE);
+      });
+
+      const reasonCell = worksheet.getCell(rowNumber, headers.length);
+      reasonCell.value = order.reason || "";
+      reasonCell.style = cloneExcelJsStyle(DEFAULT_BODY_STYLE);
+      reasonCell.dataValidation = {
+        type: "list",
+        allowBlank: true,
+        formulae: [`'原因选项'!$A$1:$A$${LOW_MARGIN_REASONS.length}`]
+      };
+    });
+
+    worksheet.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: Math.max(1, orders.length + 1), column: headers.length }
     };
-  });
 
-  worksheet.autoFilter = {
-    from: { row: 1, column: 1 },
-    to: { row: Math.max(1, orders.length + 1), column: headers.length }
-  };
+    const buffer = await workbook.xlsx.writeBuffer();
+    downloadBlob(new Blob([buffer], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    }), "低毛利订单反馈表.xlsx");
+  } catch (error) {
+    alert(`导出失败：${error.message || "请稍后重试。"}`);
+  } finally {
+    el.exportLowMarginExcelBtn.disabled = false;
+    el.exportLowMarginExcelBtn.textContent = previousText;
+  }
+}
 
-  const buffer = await workbook.xlsx.writeBuffer();
-  downloadBlob(buffer, "低毛利订单反馈表.xlsx");
+async function saveSnapshotToFeishu() {
+  if (!runtime.onlineEnabled) {
+    alert("当前未开启在线同步，无法保存周报快照到飞书。");
+    return;
+  }
+  if (runtime.snapshotSaveInFlight) return;
+
+  runtime.snapshotSaveInFlight = true;
+  const previousText = el.saveSnapshotBtn.textContent;
+  el.saveSnapshotBtn.disabled = true;
+  el.saveSnapshotBtn.textContent = "保存中...";
+  updateOnlineSyncStatus("正在保存周报 PDF 快照到飞书...", "saving");
+
+  try {
+    const response = await fetch(`${getOnlineApiBase()}/api/report-snapshot`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+      body: JSON.stringify({ report: state })
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || "保存周报快照失败");
+    }
+    runtime.lastSyncedAt = payload.savedAt || new Date().toISOString();
+    updateOnlineSyncStatus(`周报快照已保存到飞书：${payload.fileName}`, "online");
+    alert(`已保存到飞书：${payload.fileName}`);
+  } catch (error) {
+    updateOnlineSyncStatus(`保存周报快照失败：${error.message || "请稍后重试。"}`, "error");
+    alert(`保存周报快照失败：${error.message || "请稍后重试。"}`);
+  } finally {
+    runtime.snapshotSaveInFlight = false;
+    el.saveSnapshotBtn.disabled = false;
+    el.saveSnapshotBtn.textContent = previousText;
+    render();
+  }
 }
 
 async function importLowMarginExcel(event) {

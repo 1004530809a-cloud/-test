@@ -572,7 +572,7 @@ def summarize_low_margin_orders(orders):
     }
 
 
-def build_json(confirm_rows, execute_rows, confirm_path: Path, execute_path: Path, period: str, title: str, feedback_path: Path):
+def build_json(confirm_rows, execute_rows, confirm_path: Path, execute_path: Path, period: str, title: str, feedback_path: Path, yellow_headers: list[str]):
     sza_core = calc_core_metrics(confirm_rows, execute_rows, True)
     non_sza_core = calc_core_metrics(confirm_rows, execute_rows, False)
     spu_breakdown = calc_sza_spu_breakdown(confirm_rows, execute_rows)
@@ -645,6 +645,7 @@ def build_json(confirm_rows, execute_rows, confirm_path: Path, execute_path: Pat
                     {"label": "打开可填写反馈表", "href": to_file_href(feedback_path)},
                     {"label": "打开执行订单原表", "href": to_file_href(execute_path)},
                 ],
+                "exportHeaders": yellow_headers,
                 "miniMetrics": [
                     {"label": "低毛利订单数", "value": low_margin_summary["orderCount"]},
                     {"label": "低毛利成交金额", "value": low_margin_summary["amount"]},
@@ -660,13 +661,16 @@ def build_json(confirm_rows, execute_rows, confirm_path: Path, execute_path: Pat
                         {
                             "采购订单编号": order["purchaseOrderNo"],
                             "广告主名称": order["advertiser"],
+                            "SPU类目": order["spuCategory"],
+                            "执行价(含税)": order["execPriceTax"],
                             "预估订单毛利率": order["grossMargin"],
+                            "原因": order["reason"],
                         }
                         for order in low_margin_orders[:10]
                     ],
                     "低毛利订单原表预览",
                     f"执行订单来源：{execute_path.name}",
-                    ["采购订单编号", "广告主名称", "预估订单毛利率"],
+                    ["采购订单编号", "广告主名称", "SPU类目", "执行价(含税)", "预估订单毛利率", "原因"],
                     links=[
                         {"label": "打开批量填写反馈表", "href": to_file_href(feedback_path)},
                         {"label": "打开执行订单原表", "href": to_file_href(execute_path)},
@@ -713,7 +717,7 @@ def main():
     confirm_rows = load_rows(confirm_path)
     yellow_headers = detect_yellow_headers(execute_path)
     execute_rows = load_rows(execute_path, extra_headers=yellow_headers)
-    data = build_json(confirm_rows, execute_rows, confirm_path, execute_path, args.period, args.title, feedback_path)
+    data = build_json(confirm_rows, execute_rows, confirm_path, execute_path, args.period, args.title, feedback_path, yellow_headers)
     build_low_margin_feedback_excel(
         data["sections"]["margin"]["orders"],
         yellow_headers,

@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 from copy import deepcopy
 from datetime import datetime
 from http import HTTPStatus
@@ -14,8 +15,10 @@ from sync_to_feishu import (
     get_tenant_access_token,
     load_low_margin_reason_details,
     sync_snapshot,
+    upload_pdf_to_feishu_drive,
     upsert_low_margin_reason,
 )
+from report_snapshot_pdf import build_snapshot_pdf
 
 
 LOW_MARGIN_REASONS = [
@@ -35,6 +38,10 @@ LOW_MARGIN_REASONS = [
 
 def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def safe_filename_part(value: str) -> str:
+    return re.sub(r'[\\/:*?"<>|]+', "-", str(value or "").strip()).strip() or "未命名"
 
 
 def normalize_reason(value: Any) -> str:
@@ -103,6 +110,54 @@ class ReasonRepository:
         env_json = os.environ.get("FEISHU_SYNC_CONFIG_JSON", "").strip()
         if env_json:
             return json.loads(env_json)
+        env_app_id = os.environ.get("FEISHU_APP_ID", "").strip()
+        env_app_secret = os.environ.get("FEISHU_APP_SECRET", "").strip()
+        env_app_token = os.environ.get("FEISHU_APP_TOKEN", "").strip()
+        if env_app_id and env_app_secret and env_app_token:
+            return {
+                "app_id": env_app_id,
+                "app_secret": env_app_secret,
+                "app_token": env_app_token,
+                "drive_folder_token": os.environ.get("FEISHU_DRIVE_FOLDER_TOKEN", "").strip(),
+                "tables": {
+                    "low_margin_feedback": os.environ.get("FEISHU_TABLE_LOW_MARGIN_FEEDBACK", "").strip(),
+                    "weekly_snapshot": os.environ.get("FEISHU_TABLE_WEEKLY_SNAPSHOT", "").strip(),
+                },
+                "views": {
+                    "low_margin_feedback": os.environ.get("FEISHU_VIEW_LOW_MARGIN_FEEDBACK", "").strip(),
+                    "weekly_snapshot": os.environ.get("FEISHU_VIEW_WEEKLY_SNAPSHOT", "").strip(),
+                },
+                "fields": {
+                    "low_margin_feedback": {
+                        "key": os.environ.get("FEISHU_FIELD_LOW_MARGIN_KEY", "采购订单编号").strip(),
+                        "period": os.environ.get("FEISHU_FIELD_LOW_MARGIN_PERIOD", "周报周期").strip(),
+                        "purchase_order_no": os.environ.get("FEISHU_FIELD_LOW_MARGIN_PURCHASE_ORDER_NO", "采购订单编号").strip(),
+                        "advertiser": os.environ.get("FEISHU_FIELD_LOW_MARGIN_ADVERTISER", "广告主名称").strip(),
+                        "spu_category": os.environ.get("FEISHU_FIELD_LOW_MARGIN_SPU_CATEGORY", "SPU类目").strip(),
+                        "exec_price_tax": os.environ.get("FEISHU_FIELD_LOW_MARGIN_EXEC_PRICE_TAX", "执行价(含税)").strip(),
+                        "gross_margin": os.environ.get("FEISHU_FIELD_LOW_MARGIN_GROSS_MARGIN", "预估订单毛利率").strip(),
+                        "reason": os.environ.get("FEISHU_FIELD_LOW_MARGIN_REASON", "原因").strip(),
+                        "reason_editor": os.environ.get("FEISHU_FIELD_LOW_MARGIN_REASON_EDITOR", "原因修改人").strip(),
+                        "reason_updated_at": os.environ.get("FEISHU_FIELD_LOW_MARGIN_REASON_UPDATED_AT", "原因修改时间").strip(),
+                        "sync_time": os.environ.get("FEISHU_FIELD_LOW_MARGIN_SYNC_TIME", "同步时间").strip(),
+                    },
+                    "weekly_snapshot": {
+                        "key": os.environ.get("FEISHU_FIELD_SNAPSHOT_KEY", "周报周期").strip(),
+                        "period": os.environ.get("FEISHU_FIELD_SNAPSHOT_PERIOD", "周报周期").strip(),
+                        "title": os.environ.get("FEISHU_FIELD_SNAPSHOT_TITLE", "周报标题").strip(),
+                        "sza_amount": os.environ.get("FEISHU_FIELD_SNAPSHOT_SZA_AMOUNT", "SZA成交金额").strip(),
+                        "non_sza_amount": os.environ.get("FEISHU_FIELD_SNAPSHOT_NON_SZA_AMOUNT", "非SZA成交金额").strip(),
+                        "sza_margin": os.environ.get("FEISHU_FIELD_SNAPSHOT_SZA_MARGIN", "SZA预估毛利率").strip(),
+                        "non_sza_margin": os.environ.get("FEISHU_FIELD_SNAPSHOT_NON_SZA_MARGIN", "非SZA预估毛利率").strip(),
+                        "low_margin_count": os.environ.get("FEISHU_FIELD_SNAPSHOT_LOW_MARGIN_COUNT", "低毛利订单数").strip(),
+                        "low_margin_amount": os.environ.get("FEISHU_FIELD_SNAPSHOT_LOW_MARGIN_AMOUNT", "低毛利成交金额").strip(),
+                        "filled_count": os.environ.get("FEISHU_FIELD_SNAPSHOT_FILLED_COUNT", "已填写原因").strip(),
+                        "unfilled_count": os.environ.get("FEISHU_FIELD_SNAPSHOT_UNFILLED_COUNT", "未填写原因").strip(),
+                        "reason_summary": os.environ.get("FEISHU_FIELD_SNAPSHOT_REASON_SUMMARY", "原因汇总").strip(),
+                        "sync_time": os.environ.get("FEISHU_FIELD_SNAPSHOT_SYNC_TIME", "同步时间").strip(),
+                    },
+                },
+            }
         if not self.feishu_config_path:
             return None
         return json.loads(self.feishu_config_path.read_text(encoding="utf-8"))
@@ -221,6 +276,8 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/reasons":
             return self.handle_reason_save()
+        if parsed.path == "/api/report-snapshot":
+            return self.handle_report_snapshot_save()
         self.send_error(HTTPStatus.NOT_FOUND, "Unknown endpoint")
 
     def do_HEAD(self):
@@ -297,6 +354,39 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, status=500)
 
+    def handle_report_snapshot_save(self):
+        try:
+            payload = self.read_json_body()
+            report = payload.get("report") or self.repository.build_report_data()
+            if not self.repository.load_feishu_config():
+                return self.send_json({"ok": False, "error": "当前未配置飞书同步，无法保存 PDF 快照。"}, status=400)
+
+            config = self.repository.load_feishu_config()
+            access_token = get_tenant_access_token(config["app_id"], config["app_secret"])
+            sync_snapshot(report, config, access_token)
+
+            generated_at = now_iso()
+            filename = (
+                f'{safe_filename_part(report.get("title", "行业二组周报"))}_'
+                f'{safe_filename_part(report.get("period", "未命名周期"))}_'
+                f'{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf'
+            )
+            pdf_bytes = build_snapshot_pdf(report, generated_at)
+            upload_result = upload_pdf_to_feishu_drive(config, access_token, filename, pdf_bytes)
+
+            self.send_json(
+                {
+                    "ok": True,
+                    "message": "周报快照已保存到飞书。",
+                    "savedAt": generated_at,
+                    "fileName": upload_result["name"],
+                    "fileToken": upload_result["file_token"],
+                    "folderToken": upload_result["folder_token"],
+                }
+            )
+        except Exception as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=500)
+
 
 def build_handler(static_dir: Path, repository: ReasonRepository):
     def factory(*args, **kwargs):
@@ -312,7 +402,7 @@ def main():
     parser.add_argument("--static-dir", default=str(Path(__file__).resolve().parent))
     parser.add_argument("--data", default=str(Path(__file__).resolve().parent / "weekly-report-data.generated.json"))
     parser.add_argument("--store", default=str(Path(__file__).resolve().parent / "runtime" / "online-reasons.json"))
-    parser.add_argument("--feishu-config", default=str(Path(__file__).resolve().parent / "feishu_sync_config.json"))
+    parser.add_argument("--feishu-config", default="")
     args = parser.parse_args()
 
     repository = ReasonRepository(
