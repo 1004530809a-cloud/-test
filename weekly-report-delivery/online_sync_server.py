@@ -315,6 +315,7 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
                 }
             )
         except Exception as exc:
+            print(f"[report_snapshot_error] {exc}", flush=True)
             self.send_json({"ok": False, "error": str(exc)}, status=500)
 
     def handle_history(self, query: str):
