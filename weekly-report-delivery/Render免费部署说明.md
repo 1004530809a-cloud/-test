@@ -80,6 +80,7 @@
       "filled_count": "已填写原因",
       "unfilled_count": "未填写原因",
       "reason_summary": "原因汇总",
+      "pdf_attachment": "PDF快照",
       "sync_time": "同步时间"
     }
   }

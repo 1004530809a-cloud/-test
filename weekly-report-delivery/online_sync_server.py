@@ -11,10 +11,12 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from sync_to_feishu import (
+    attach_pdf_to_snapshot_record,
     build_reason_summary,
     get_tenant_access_token,
     load_low_margin_reason_details,
     sync_snapshot,
+    upload_pdf_to_bitable,
     upload_pdf_to_feishu_drive,
     upsert_low_margin_reason,
 )
@@ -154,6 +156,7 @@ class ReasonRepository:
                         "filled_count": os.environ.get("FEISHU_FIELD_SNAPSHOT_FILLED_COUNT", "已填写原因").strip(),
                         "unfilled_count": os.environ.get("FEISHU_FIELD_SNAPSHOT_UNFILLED_COUNT", "未填写原因").strip(),
                         "reason_summary": os.environ.get("FEISHU_FIELD_SNAPSHOT_REASON_SUMMARY", "原因汇总").strip(),
+                        "pdf_attachment": os.environ.get("FEISHU_FIELD_SNAPSHOT_PDF_ATTACHMENT", "").strip(),
                         "sync_time": os.environ.get("FEISHU_FIELD_SNAPSHOT_SYNC_TIME", "同步时间").strip(),
                     },
                 },
@@ -373,7 +376,7 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
 
             config = self.repository.load_feishu_config()
             access_token = get_tenant_access_token(config["app_id"], config["app_secret"])
-            sync_snapshot(report, config, access_token)
+            snapshot_ref = sync_snapshot(report, config, access_token)
 
             generated_at = now_iso()
             filename = (
@@ -382,9 +385,27 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
                 f'{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf'
             )
             pdf_bytes = build_snapshot_pdf(report, generated_at)
+            attachment_field = str(config.get("fields", {}).get("weekly_snapshot", {}).get("pdf_attachment") or "").strip()
+            if attachment_field:
+                upload_result = upload_pdf_to_bitable(config, access_token, filename, pdf_bytes)
+                attachment_result = attach_pdf_to_snapshot_record(snapshot_ref, config, access_token, upload_result["file_token"]) or {}
+                return self.send_json(
+                    {
+                        "ok": True,
+                        "message": "周报快照已保存到飞书多维表格。",
+                        "savedAt": generated_at,
+                        "fileName": upload_result["name"],
+                        "fileToken": upload_result["file_token"],
+                        "folderToken": "",
+                        "storageMode": "bitable_attachment",
+                        "attachmentField": attachment_result.get("attachment_field", attachment_field),
+                        "attachmentCount": attachment_result.get("attachment_count", 1),
+                    }
+                )
+
             upload_result = upload_pdf_to_feishu_drive(config, access_token, filename, pdf_bytes)
 
-            self.send_json(
+            return self.send_json(
                 {
                     "ok": True,
                     "message": "周报快照已保存到飞书。",
@@ -392,9 +413,11 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
                     "fileName": upload_result["name"],
                     "fileToken": upload_result["file_token"],
                     "folderToken": upload_result["folder_token"],
+                    "storageMode": "drive",
                 }
             )
         except Exception as exc:
+            print(f"[report_snapshot_error] {exc}", flush=True)
             self.send_json({"ok": False, "error": str(exc)}, status=500)
 
 

@@ -91,6 +91,7 @@ def create_record(app_token: str, table_id: str, access_token: str, fields: dict
     data = http_json("POST", url, payload=payload, headers={"Authorization": f"Bearer {access_token}"})
     if data.get("code") != 0:
         raise RuntimeError(f"创建记录失败: {data}")
+    return data.get("data", {}).get("record", {}) or {}
 
 
 def update_record(app_token: str, table_id: str, record_id: str, access_token: str, fields: dict):
@@ -99,6 +100,7 @@ def update_record(app_token: str, table_id: str, record_id: str, access_token: s
     data = http_json("PUT", url, payload=payload, headers={"Authorization": f"Bearer {access_token}"})
     if data.get("code") != 0:
         raise RuntimeError(f"更新记录失败: {data}")
+    return data.get("data", {}).get("record", {}) or {}
 
 
 def build_existing_map(app_token: str, table_id: str, access_token: str, key_field: str, view_id: str = ""):
@@ -310,10 +312,19 @@ def sync_snapshot(data: dict, config: dict, access_token: str):
     reason_summary_field = field_map.get("reason_summary")
     if reason_summary_field:
       fields[reason_summary_field] = reason_summary
+    existing_item = existing.get(record_key, {})
     if record_key in existing:
-        update_record(config["app_token"], table_id, existing[record_key]["record_id"], access_token, fields)
+        record_id = existing_item["record_id"]
+        update_record(config["app_token"], table_id, record_id, access_token, fields)
     else:
-        create_record(config["app_token"], table_id, access_token, fields)
+        created = create_record(config["app_token"], table_id, access_token, fields)
+        record_id = str(created.get("record_id") or created.get("id") or "")
+    return {
+        "record_id": record_id,
+        "record_key": record_key,
+        "table_id": table_id,
+        "existing_fields": existing_item.get("fields", {}) or {},
+    }
 
 
 def get_root_folder_token(access_token: str) -> str:
@@ -352,6 +363,65 @@ def upload_pdf_to_feishu_drive(config: dict, access_token: str, filename: str, c
         "file_token": str(result.get("file_token") or ""),
         "name": str(result.get("name") or filename),
         "folder_token": folder_token,
+    }
+
+
+def upload_pdf_to_bitable(config: dict, access_token: str, filename: str, content: bytes) -> dict:
+    app_token = str(config.get("app_token") or "").strip()
+    data = http_multipart(
+        "POST",
+        f"{API_ROOT}/drive/v1/medias/upload_all",
+        fields={
+            "file_name": filename,
+            "parent_type": "bitable_file",
+            "parent_node": app_token,
+            "size": str(len(content)),
+            "extra": json.dumps({"drive_route_token": app_token}, ensure_ascii=False),
+        },
+        files=[
+            {
+                "field_name": "file",
+                "filename": filename,
+                "content_type": mimetypes.guess_type(filename)[0] or "application/pdf",
+                "content": content,
+            }
+        ],
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    if data.get("code") != 0:
+        raise RuntimeError(f"上传 PDF 到飞书多维表格素材失败: {data}")
+    result = data.get("data", {}) or {}
+    return {
+        "file_token": str(result.get("file_token") or ""),
+        "name": filename,
+    }
+
+
+def attach_pdf_to_snapshot_record(snapshot_ref: dict, config: dict, access_token: str, file_token: str) -> dict | None:
+    field_map = config["fields"]["weekly_snapshot"]
+    attachment_field = str(field_map.get("pdf_attachment") or "").strip()
+    record_id = str(snapshot_ref.get("record_id") or "").strip()
+    if not attachment_field or not record_id or not file_token:
+        return None
+
+    attachments = []
+    existing_items = snapshot_ref.get("existing_fields", {}).get(attachment_field) or []
+    if isinstance(existing_items, list):
+        for item in existing_items:
+            token = str((item or {}).get("file_token") or "").strip()
+            if token:
+                attachments.append({"file_token": token})
+    attachments.append({"file_token": file_token})
+    update_record(
+        config["app_token"],
+        snapshot_ref["table_id"],
+        record_id,
+        access_token,
+        {attachment_field: attachments},
+    )
+    return {
+        "attachment_field": attachment_field,
+        "attachment_count": len(attachments),
     }
 
 
