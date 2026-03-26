@@ -1445,8 +1445,13 @@ async function saveSnapshotToFeishu() {
       throw new Error(payload?.error || "保存周报快照失败");
     }
     runtime.lastSyncedAt = payload.savedAt || new Date().toISOString();
-    updateOnlineSyncStatus(`周报快照已保存到飞书：${payload.fileName}`, "online");
-    alert(`已保存到飞书：${payload.fileName}`);
+    updateOnlineSyncStatus(
+      `周报快照已保存到飞书：${payload.fileName}（folderToken: ${payload.folderToken || "unknown"}）`,
+      "online"
+    );
+    alert(
+      `已保存到飞书：${payload.fileName}\nfolderToken: ${payload.folderToken || "unknown"}\nfileToken: ${payload.fileToken || "unknown"}`
+    );
   } catch (error) {
     updateOnlineSyncStatus(`保存周报快照失败：${error.message || "请稍后重试。"}`, "error");
     alert(`保存周报快照失败：${error.message || "请稍后重试。"}`);
