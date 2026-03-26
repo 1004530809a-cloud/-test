@@ -358,6 +358,15 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
         try:
             payload = self.read_json_body()
             report = payload.get("report") or self.repository.build_report_data()
+            if not report.get("sections", {}).get("margin", {}).get("orders"):
+                server_report = self.repository.build_report_data()
+                report.setdefault("sections", {}).setdefault("margin", {})["orders"] = (
+                    server_report.get("sections", {}).get("margin", {}).get("orders", [])
+                )
+                report["sections"]["margin"].setdefault(
+                    "reasons",
+                    server_report.get("sections", {}).get("margin", {}).get("reasons", []),
+                )
             if not self.repository.load_feishu_config():
                 return self.send_json({"ok": False, "error": "当前未配置飞书同步，无法保存 PDF 快照。"}, status=400)
 

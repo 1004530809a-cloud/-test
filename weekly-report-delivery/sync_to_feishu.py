@@ -141,7 +141,8 @@ def merge_low_margin_reasons(data: dict, config: dict, access_token: str):
     composite_key_enabled = key_field != field_map["purchase_order_no"]
     merged_orders = []
 
-    for order in data["sections"]["margin"]["orders"]:
+    orders = data.get("sections", {}).get("margin", {}).get("orders", [])
+    for order in orders:
         record_key = f'{data["period"]}::{order["purchaseOrderNo"]}' if composite_key_enabled else order["purchaseOrderNo"]
         existing_item = existing.get(record_key, {})
         existing_reason = str(existing_item.get("fields", {}).get(field_map["reason"], "") or "").strip()
