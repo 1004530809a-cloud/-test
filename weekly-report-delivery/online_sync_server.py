@@ -185,6 +185,21 @@ class ReasonRepository:
         self.store_path.parent.mkdir(parents=True, exist_ok=True)
         self.store_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def load_shared_report(self) -> dict | None:
+        store = self.load_store()
+        report = store.get("shared_report")
+        if not isinstance(report, dict):
+            return None
+        return deepcopy(report)
+
+    def save_shared_report(self, report: dict, changed_at: str = "", editor: str = ""):
+        store = self.load_store()
+        store["shared_report"] = deepcopy(report)
+        store["shared_report_updated_at"] = changed_at or now_iso()
+        if editor:
+            store["shared_report_updated_by"] = editor
+        self.save_store(store)
+
     def get_feishu_config_source(self) -> str:
         if os.environ.get("FEISHU_SYNC_CONFIG_JSON", "").strip():
             return "env_json"
@@ -263,8 +278,7 @@ class ReasonRepository:
         store = self.load_store()
         return deepcopy(store.get("periods", {}).get(period, {}).get("reasons", {}))
 
-    def append_local_history(self, period: str, order: dict, before: str, after: str, editor: str, changed_at: str):
-        store = self.load_store()
+    def append_local_history_to_store(self, store: dict, period: str, order: dict, before: str, after: str, editor: str, changed_at: str):
         period_bucket = store.setdefault("periods", {}).setdefault(period, {"reasons": {}, "history": []})
         period_bucket["reasons"][order["purchaseOrderNo"]] = {
             "reason": after,
@@ -280,6 +294,10 @@ class ReasonRepository:
             "changedAt": changed_at,
         })
         period_bucket["history"] = period_bucket["history"][-200:]
+
+    def append_local_history(self, period: str, order: dict, before: str, after: str, editor: str, changed_at: str):
+        store = self.load_store()
+        self.append_local_history_to_store(store, period, order, before, after, editor, changed_at)
         self.save_store(store)
 
     def upsert_reason(self, period: str, order: dict, reason: str, editor: str, changed_at: str):
@@ -296,6 +314,7 @@ class ReasonRepository:
                 reason_updated_at=changed_at,
             )
             merged_data = self.build_report_data()
+            self.save_shared_report(merged_data, changed_at=changed_at, editor=editor)
             sync_snapshot(merged_data, config, access_token)
             return
         existing = self.load_reason_details(period).get(order["purchaseOrderNo"], {})
@@ -307,9 +326,78 @@ class ReasonRepository:
             editor=editor,
             changed_at=changed_at,
         )
+        self.save_shared_report(self.build_report_data(), changed_at=changed_at, editor=editor)
+
+    def bulk_upsert_reasons(self, period: str, updates: list[dict], editor: str, changed_at: str) -> dict:
+        report = self.build_report_data()
+        orders = {
+            str(item.get("purchaseOrderNo") or "").strip(): item
+            for item in report.get("sections", {}).get("margin", {}).get("orders", [])
+            if str(item.get("purchaseOrderNo") or "").strip()
+        }
+        normalized_updates = []
+        for item in updates:
+            order_no = str((item or {}).get("purchaseOrderNo") or "").strip()
+            if not order_no or order_no not in orders:
+                continue
+            normalized_updates.append(
+                {
+                    "purchaseOrderNo": order_no,
+                    "reason": normalize_reason((item or {}).get("reason")),
+                    "order": orders[order_no],
+                }
+            )
+
+        if not normalized_updates:
+            fresh = self.build_report_data()
+            self.save_shared_report(fresh, changed_at=changed_at, editor=editor)
+            return fresh
+
+        config = self.load_feishu_config()
+        if config:
+            access_token = get_tenant_access_token(config["app_id"], config["app_secret"])
+            for item in normalized_updates:
+                upsert_low_margin_reason(
+                    config=config,
+                    access_token=access_token,
+                    period=period,
+                    order=item["order"],
+                    reason=item["reason"],
+                    reason_editor=editor,
+                    reason_updated_at=changed_at,
+                )
+            merged_data = self.build_report_data()
+            self.save_shared_report(merged_data, changed_at=changed_at, editor=editor)
+            sync_snapshot(merged_data, config, access_token)
+            return merged_data
+
+        store = self.load_store()
+        existing_details = deepcopy(store.get("periods", {}).get(period, {}).get("reasons", {}))
+        for item in normalized_updates:
+            order = item["order"]
+            order_no = item["purchaseOrderNo"]
+            before_detail = existing_details.get(order_no, {})
+            self.append_local_history_to_store(
+                store,
+                period=period,
+                order=order,
+                before=normalize_reason(before_detail.get("reason")),
+                after=item["reason"],
+                editor=editor,
+                changed_at=changed_at,
+            )
+            existing_details[order_no] = {
+                "reason": item["reason"],
+                "reasonEditor": editor,
+                "reasonUpdatedAt": changed_at,
+            }
+        self.save_store(store)
+        merged_data = self.build_report_data()
+        self.save_shared_report(merged_data, changed_at=changed_at, editor=editor)
+        return merged_data
 
     def build_report_data(self) -> dict:
-        report = self.load_base_data()
+        report = self.load_shared_report() or self.load_base_data()
         orders = report.get("sections", {}).get("margin", {}).get("orders", [])
         period = str(report.get("period", "")).strip()
         reason_details = self.load_reason_details(period)
@@ -366,8 +454,12 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/report-state":
+            return self.handle_report_state_save()
         if parsed.path == "/api/reasons":
             return self.handle_reason_save()
+        if parsed.path == "/api/reasons/bulk":
+            return self.handle_bulk_reason_save()
         if parsed.path == "/api/report-snapshot":
             return self.handle_report_snapshot_save()
         self.send_error(HTTPStatus.NOT_FOUND, "Unknown endpoint")
@@ -410,6 +502,28 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
             print(f"[report_snapshot_error] {exc}", flush=True)
             self.send_json({"ok": False, "error": str(exc)}, status=500)
 
+    def handle_report_state_save(self):
+        try:
+            payload = self.read_json_body()
+            report = payload.get("report")
+            if not isinstance(report, dict):
+                return self.send_json({"ok": False, "error": "缺少有效的周报数据。"}, status=400)
+            editor = normalize_reason(payload.get("editor")) or "网页协作"
+            changed_at = now_iso()
+            self.repository.save_shared_report(report, changed_at=changed_at, editor=editor)
+            fresh = self.repository.build_report_data()
+            self.send_json(
+                {
+                    "ok": True,
+                    "message": "在线周报已同步。",
+                    "savedAt": changed_at,
+                    "mode": "feishu" if self.repository.load_feishu_config() else "local-store",
+                    "report": fresh,
+                }
+            )
+        except Exception as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=500)
+
     def handle_history(self, query: str):
         try:
             limit = int(parse_qs(query).get("limit", ["20"])[0])
@@ -441,6 +555,28 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
                     "ok": True,
                     "message": "已保存",
                     "reasonSummary": fresh["sections"]["margin"].get("reasonSummary", ""),
+                    "report": fresh,
+                }
+            )
+        except Exception as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=500)
+
+    def handle_bulk_reason_save(self):
+        try:
+            payload = self.read_json_body()
+            report = self.repository.build_report_data()
+            period = str(payload.get("period") or report.get("period") or "").strip()
+            updates = payload.get("items") or []
+            if not isinstance(updates, list):
+                return self.send_json({"ok": False, "error": "批量原因数据格式不正确。"}, status=400)
+            editor = normalize_reason(payload.get("editor")) or "网页填写"
+            changed_at = now_iso()
+            fresh = self.repository.bulk_upsert_reasons(period=period, updates=updates, editor=editor, changed_at=changed_at)
+            self.send_json(
+                {
+                    "ok": True,
+                    "message": "已批量保存",
+                    "updatedCount": len(updates),
                     "report": fresh,
                 }
             )
@@ -584,7 +720,7 @@ def main():
     repository = ReasonRepository(
         data_path=Path(args.data),
         store_path=Path(args.store),
-        feishu_config_path=Path(args.feishu_config),
+        feishu_config_path=Path(args.feishu_config) if args.feishu_config else None,
     )
     server = ThreadingHTTPServer((args.host, args.port), build_handler(Path(args.static_dir), repository))
     print(f"Serving weekly report at http://{args.host}:{args.port}")

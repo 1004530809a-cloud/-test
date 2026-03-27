@@ -199,6 +199,10 @@ const runtime = {
   onlineConfig: null,
   saveInFlight: false,
   snapshotSaveInFlight: false,
+  stateSyncInFlight: false,
+  stateSyncTimer: null,
+  stateSyncQueued: false,
+  pendingStatePayload: null,
   lastSyncedAt: "",
   pollTimer: null
 };
@@ -277,18 +281,22 @@ function bindControls() {
   el.titleInput.addEventListener("input", () => {
     state.title = el.titleInput.value.trim() || "行业二组周报";
     renderHero();
+    scheduleOnlineReportSync();
   });
   el.periodInput.addEventListener("input", () => {
     state.period = el.periodInput.value.trim();
     renderHero();
+    scheduleOnlineReportSync();
   });
   el.audienceInput.addEventListener("input", () => {
     state.audience = el.audienceInput.value.trim();
     renderHero();
+    scheduleOnlineReportSync();
   });
   el.sampleBtn.addEventListener("click", () => {
     executeExportContext = null;
     replaceState(JSON.parse(JSON.stringify(sampleData)), { persistLocal: !runtime.onlineEnabled });
+    scheduleOnlineReportSync({ immediate: true });
   });
   el.generateFromExcelBtn.addEventListener("click", handleExcelGeneration);
   el.printBtn.addEventListener("click", () => window.print());
@@ -355,17 +363,80 @@ async function loadOnlineState(showToast = false) {
   }
 }
 
+function scheduleOnlineReportSync(options = {}) {
+  if (!runtime.onlineEnabled) return;
+  const { immediate = false } = options;
+  runtime.pendingStatePayload = JSON.parse(JSON.stringify(state));
+  if (runtime.stateSyncTimer) {
+    window.clearTimeout(runtime.stateSyncTimer);
+    runtime.stateSyncTimer = null;
+  }
+  const trigger = () => {
+    runtime.stateSyncTimer = null;
+    void syncOnlineReportState();
+  };
+  if (immediate) {
+    trigger();
+    return;
+  }
+  runtime.stateSyncTimer = window.setTimeout(trigger, 800);
+}
+
+async function syncOnlineReportState() {
+  if (!runtime.onlineEnabled) return;
+  if (runtime.saveInFlight || runtime.snapshotSaveInFlight) {
+    runtime.stateSyncQueued = true;
+    return;
+  }
+  if (runtime.stateSyncInFlight) {
+    runtime.stateSyncQueued = true;
+    return;
+  }
+
+  runtime.stateSyncInFlight = true;
+  updateOnlineSyncStatus("正在同步在线周报...", "saving");
+  try {
+    const reportPayload = runtime.pendingStatePayload
+      ? JSON.parse(JSON.stringify(runtime.pendingStatePayload))
+      : JSON.parse(JSON.stringify(state));
+    const response = await fetch(`${getOnlineApiBase()}/api/report-state`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+      body: JSON.stringify({
+        report: reportPayload,
+        editor: runtime.onlineConfig?.editorName || ""
+      })
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload?.ok || !payload.report) {
+      throw new Error(payload?.error || "在线周报同步失败");
+    }
+    runtime.pendingStatePayload = null;
+    runtime.lastSyncedAt = payload.savedAt || new Date().toISOString();
+    replaceState(payload.report, { persistLocal: false });
+    updateOnlineSyncStatus("在线周报已同步。", "online");
+  } catch (error) {
+    updateOnlineSyncStatus(`在线同步异常：${error.message || "请检查服务是否启动。"}`, "error");
+  } finally {
+    runtime.stateSyncInFlight = false;
+    if (runtime.stateSyncQueued) {
+      runtime.stateSyncQueued = false;
+      scheduleOnlineReportSync({ immediate: true });
+    }
+  }
+}
+
 function startOnlinePolling() {
   if (!runtime.onlineEnabled || runtime.pollTimer) return;
   const interval = Number(runtime.onlineConfig?.pollIntervalMs) || 20000;
   runtime.pollTimer = window.setInterval(() => {
-    if (runtime.saveInFlight || runtime.snapshotSaveInFlight || document.hidden) return;
+    if (runtime.saveInFlight || runtime.snapshotSaveInFlight || runtime.stateSyncInFlight || runtime.stateSyncTimer || document.hidden) return;
     loadOnlineState(false);
   }, interval);
 }
 
 function updateOnlineSyncStatus(message = "", mode = "") {
-  const statusMode = mode || (runtime.onlineEnabled ? ((runtime.saveInFlight || runtime.snapshotSaveInFlight) ? "saving" : "online") : "offline");
+  const statusMode = mode || (runtime.onlineEnabled ? ((runtime.saveInFlight || runtime.snapshotSaveInFlight || runtime.stateSyncInFlight) ? "saving" : "online") : "offline");
   const badgeTextMap = {
     online: "在线同步中",
     saving: "保存中",
@@ -378,9 +449,9 @@ function updateOnlineSyncStatus(message = "", mode = "") {
   if (message) {
     el.onlineSyncText.textContent = message;
   } else if (runtime.onlineEnabled) {
-    el.onlineSyncText.textContent = "当前在线同步范围：低毛利原因填写、原因汇总、飞书留存快照。Excel 重新生成仍在线下执行。";
+    el.onlineSyncText.textContent = "当前在线同步范围：整份周报数据、低毛利原因填写、原因汇总、飞书留存快照。";
   } else {
-    el.onlineSyncText.textContent = "当前仍按本地 JSON / 本地缓存运行，低毛利原因不会多人实时同步。";
+    el.onlineSyncText.textContent = "当前仍按本地 JSON / 本地缓存运行，整份周报数据不会多人实时同步。";
   }
 
   if (runtime.onlineEnabled) {
@@ -438,6 +509,7 @@ async function handleExcelGeneration() {
       next.sections.margin.exportHeaders = [...executeExportContext.highlightedHeaders];
     }
     replaceState(next, { persistLocal: !runtime.onlineEnabled });
+    scheduleOnlineReportSync({ immediate: true });
     el.excelUploadHint.textContent = `已按最新口径生成：已过滤“${EXCLUDED_SPU_KEYWORD}”类目，并按 SPU类目 输出 SZA 压价数据。`;
   } catch (error) {
     alert(`生成失败：${error.message || "请检查 Excel 表头和文件结构。"}`);
@@ -1218,6 +1290,10 @@ async function handleLowMarginReasonChange(event) {
       alert(`在线保存失败：${error.message || "请稍后重试。"}`);
     } finally {
       runtime.saveInFlight = false;
+      if (runtime.stateSyncQueued) {
+        runtime.stateSyncQueued = false;
+        scheduleOnlineReportSync({ immediate: true });
+      }
       render();
     }
     return;
@@ -1280,6 +1356,7 @@ function handleEditableInput(event) {
   if (!runtime.onlineEnabled) {
     persistStateToLocalCache();
   }
+  scheduleOnlineReportSync();
   if (path.endsWith(".status")) {
     renderRiskBoard();
     bindEditable();
@@ -1482,6 +1559,10 @@ async function saveSnapshotToFeishu() {
     alert(`保存周报快照失败：${error.message || "请稍后重试。"}`);
   } finally {
     runtime.snapshotSaveInFlight = false;
+    if (runtime.stateSyncQueued) {
+      runtime.stateSyncQueued = false;
+      scheduleOnlineReportSync({ immediate: true });
+    }
     el.saveSnapshotBtn.disabled = false;
     el.saveSnapshotBtn.textContent = previousText;
     render();
@@ -1515,6 +1596,34 @@ async function importLowMarginExcel(event) {
       if (orderNo) reasonByOrderNo.set(orderNo, reason);
     });
 
+    if (runtime.onlineEnabled) {
+      runtime.saveInFlight = true;
+      updateOnlineSyncStatus("正在批量保存低毛利原因...", "saving");
+      const items = (state.sections.margin.orders || [])
+        .filter((order) => reasonByOrderNo.has(order.purchaseOrderNo))
+        .map((order) => ({
+          purchaseOrderNo: order.purchaseOrderNo,
+          reason: reasonByOrderNo.get(order.purchaseOrderNo) || ""
+        }));
+      const response = await fetch(`${getOnlineApiBase()}/api/reasons/bulk`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+        body: JSON.stringify({
+          period: state.period,
+          items,
+          editor: runtime.onlineConfig?.editorName || ""
+        })
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload?.ok || !payload.report) {
+        throw new Error(payload?.error || "批量保存失败");
+      }
+      runtime.lastSyncedAt = new Date().toISOString();
+      replaceState(payload.report, { persistLocal: false });
+      updateOnlineSyncStatus(`已在线导入 ${payload.updatedCount || items.length} 条低毛利原因。`, "online");
+      return;
+    }
+
     (state.sections.margin.orders || []).forEach((order) => {
       if (reasonByOrderNo.has(order.purchaseOrderNo)) {
         order.reason = reasonByOrderNo.get(order.purchaseOrderNo);
@@ -1527,6 +1636,11 @@ async function importLowMarginExcel(event) {
   } catch (error) {
     alert(`导入低毛利反馈表失败：${error.message || "请检查 Excel 格式。"}`);
   } finally {
+    runtime.saveInFlight = false;
+    if (runtime.stateSyncQueued) {
+      runtime.stateSyncQueued = false;
+      scheduleOnlineReportSync({ immediate: true });
+    }
     el.importLowMarginExcelInput.value = "";
   }
 }
@@ -1572,6 +1686,7 @@ function importDataFile(event) {
       const parsed = JSON.parse(String(reader.result));
       executeExportContext = null;
       replaceState(parsed, { persistLocal: !runtime.onlineEnabled });
+      scheduleOnlineReportSync({ immediate: true });
     } catch (error) {
       alert("导入失败：JSON 格式不正确。");
     } finally {
