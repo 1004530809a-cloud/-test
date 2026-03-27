@@ -13,6 +13,33 @@ API_ROOT = "https://open.feishu.cn/open-apis"
 SSL_CONTEXT = ssl.create_default_context()
 
 
+def mask_token(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) <= 8:
+        return text
+    return f"{text[:4]}...{text[-4:]}"
+
+
+def build_http_error_message(status_code: int, url: str, detail: str, request_context: dict | None = None) -> str:
+    message = f"HTTP {status_code} {url}: {detail}"
+    if request_context:
+        message += f" | request={json.dumps(request_context, ensure_ascii=False, sort_keys=True)}"
+    return message
+
+
+def sanitize_multipart_fields(fields: dict[str, str]) -> dict[str, str]:
+    sanitized = {}
+    for key, value in fields.items():
+        text = str(value or "").strip()
+        if key in {"parent_node", "drive_route_token"}:
+            sanitized[key] = mask_token(text)
+        else:
+            sanitized[key] = text
+    return sanitized
+
+
 def http_json(method: str, url: str, payload=None, headers=None):
     data = None
     req_headers = {"Content-Type": "application/json; charset=utf-8"}
@@ -29,7 +56,7 @@ def http_json(method: str, url: str, payload=None, headers=None):
                 return json.loads(body)
         except error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="ignore")
-            raise RuntimeError(f"HTTP {exc.code} {url}: {detail}") from exc
+            raise RuntimeError(build_http_error_message(exc.code, url, detail)) from exc
         except Exception as exc:
             last_error = exc
             if attempt == 2:
@@ -65,7 +92,9 @@ def http_multipart(method: str, url: str, fields: dict[str, str], files: list[di
             return json.loads(response.read().decode("utf-8"))
     except error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"HTTP {exc.code} {url}: {detail}") from exc
+        raise RuntimeError(
+            build_http_error_message(exc.code, url, detail, request_context=sanitize_multipart_fields(fields))
+        ) from exc
 
 
 def get_tenant_access_token(app_id: str, app_secret: str) -> str:

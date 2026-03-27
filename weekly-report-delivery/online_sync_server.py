@@ -50,6 +50,83 @@ def normalize_reason(value: Any) -> str:
     return str(value or "").strip()
 
 
+def mask_token(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) <= 8:
+        return text
+    return f"{text[:4]}...{text[-4:]}"
+
+
+def build_snapshot_log_context(config: dict | None, config_source: str, report: dict | None = None) -> dict:
+    context = {
+        "configSource": config_source,
+    }
+    if report:
+        context["period"] = str(report.get("period") or "").strip()
+        context["title"] = str(report.get("title") or "").strip()
+    if not config:
+        return {key: value for key, value in context.items() if value not in ("", None)}
+
+    weekly_snapshot_fields = config.get("fields", {}).get("weekly_snapshot", {}) or {}
+    attachment_field = str(weekly_snapshot_fields.get("pdf_attachment") or "").strip()
+    drive_folder_token = str(config.get("drive_folder_token") or "").strip()
+    context.update(
+        {
+            "attachmentField": attachment_field,
+            "storageMode": "bitable_attachment" if attachment_field else "drive",
+            "uploadEndpoint": "/drive/v1/medias/upload_all" if attachment_field else "/drive/v1/files/upload_all",
+            "snapshotTableId": mask_token(config.get("tables", {}).get("weekly_snapshot", "")),
+            "driveFolderToken": mask_token(drive_folder_token),
+            "driveFolderConfigured": bool(drive_folder_token),
+        }
+    )
+    return {key: value for key, value in context.items() if value not in ("", None)}
+
+
+def parse_http_error_details(message: str) -> dict:
+    if not message:
+        return {}
+    base_message, _, request_payload = message.partition(" | request=")
+    match = re.match(r"^HTTP (?P<status>\d+) (?P<url>\S+): (?P<body>\{.*\})$", base_message, re.DOTALL)
+    if not match:
+        return {}
+
+    details: dict[str, Any] = {
+        "httpStatus": int(match.group("status")),
+        "requestUrl": match.group("url"),
+    }
+    try:
+        body = json.loads(match.group("body"))
+    except Exception:
+        body = None
+    if isinstance(body, dict):
+        details["feishuCode"] = body.get("code")
+        details["feishuMsg"] = body.get("msg")
+        error_info = body.get("error") or {}
+        if isinstance(error_info, dict):
+            log_id = str(error_info.get("log_id") or "").strip()
+            troubleshooter = str(error_info.get("troubleshooter") or "").strip()
+            method_id = str(error_info.get("method_id") or "").strip()
+            if log_id:
+                details["feishuLogId"] = log_id
+            if troubleshooter:
+                details["troubleshooter"] = troubleshooter
+            if method_id:
+                details["methodId"] = method_id
+    if request_payload:
+        try:
+            details["requestContext"] = json.loads(request_payload)
+        except Exception:
+            details["requestContext"] = request_payload
+    return {key: value for key, value in details.items() if value not in ("", None, {}, [])}
+
+
+def log_snapshot_event(event: str, payload: dict):
+    print(f"[{event}] {json.dumps(payload, ensure_ascii=False, sort_keys=True)}", flush=True)
+
+
 def format_money(value: float) -> str:
     return f"{value:,.2f}"
 
@@ -107,6 +184,18 @@ class ReasonRepository:
     def save_store(self, payload: dict):
         self.store_path.parent.mkdir(parents=True, exist_ok=True)
         self.store_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def get_feishu_config_source(self) -> str:
+        if os.environ.get("FEISHU_SYNC_CONFIG_JSON", "").strip():
+            return "env_json"
+        env_app_id = os.environ.get("FEISHU_APP_ID", "").strip()
+        env_app_secret = os.environ.get("FEISHU_APP_SECRET", "").strip()
+        env_app_token = os.environ.get("FEISHU_APP_TOKEN", "").strip()
+        if env_app_id and env_app_secret and env_app_token:
+            return "env_fields"
+        if self.feishu_config_path:
+            return f"file:{self.feishu_config_path.name}"
+        return "none"
 
     def load_feishu_config(self) -> dict | None:
         env_json = os.environ.get("FEISHU_SYNC_CONFIG_JSON", "").strip()
@@ -359,6 +448,7 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
             self.send_json({"ok": False, "error": str(exc)}, status=500)
 
     def handle_report_snapshot_save(self):
+        snapshot_log_context: dict[str, Any] = {}
         try:
             payload = self.read_json_body()
             report = payload.get("report") or self.repository.build_report_data()
@@ -375,8 +465,19 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
                 return self.send_json({"ok": False, "error": "当前未配置飞书同步，无法保存 PDF 快照。"}, status=400)
 
             config = self.repository.load_feishu_config()
+            snapshot_log_context.update(
+                build_snapshot_log_context(config, self.repository.get_feishu_config_source(), report=report)
+            )
+            log_snapshot_event("report_snapshot_start", snapshot_log_context)
             access_token = get_tenant_access_token(config["app_id"], config["app_secret"])
             snapshot_ref = sync_snapshot(report, config, access_token)
+            snapshot_log_context.update(
+                {
+                    "snapshotRecordId": mask_token(snapshot_ref.get("record_id")),
+                    "snapshotRecordKey": str(snapshot_ref.get("record_key") or "").strip(),
+                    "snapshotTableId": mask_token(snapshot_ref.get("table_id") or snapshot_log_context.get("snapshotTableId")),
+                }
+            )
 
             generated_at = now_iso()
             filename = (
@@ -389,6 +490,15 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
             if attachment_field:
                 upload_result = upload_pdf_to_bitable(config, access_token, filename, pdf_bytes)
                 attachment_result = attach_pdf_to_snapshot_record(snapshot_ref, config, access_token, upload_result["file_token"]) or {}
+                log_snapshot_event(
+                    "report_snapshot_saved",
+                    {
+                        **snapshot_log_context,
+                        "fileName": upload_result["name"],
+                        "fileToken": mask_token(upload_result["file_token"]),
+                        "attachmentCount": attachment_result.get("attachment_count", 1),
+                    },
+                )
                 return self.send_json(
                     {
                         "ok": True,
@@ -404,6 +514,15 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
                 )
 
             upload_result = upload_pdf_to_feishu_drive(config, access_token, filename, pdf_bytes)
+            log_snapshot_event(
+                "report_snapshot_saved",
+                {
+                    **snapshot_log_context,
+                    "fileName": upload_result["name"],
+                    "fileToken": mask_token(upload_result["file_token"]),
+                    "folderToken": mask_token(upload_result["folder_token"]),
+                },
+            )
 
             return self.send_json(
                 {
@@ -417,8 +536,32 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
                 }
             )
         except Exception as exc:
-            print(f"[report_snapshot_error] {exc}", flush=True)
-            self.send_json({"ok": False, "error": str(exc)}, status=500)
+            error_details = parse_http_error_details(str(exc))
+            log_snapshot_event(
+                "report_snapshot_error",
+                {
+                    **snapshot_log_context,
+                    **error_details,
+                    "message": str(exc),
+                },
+            )
+            diagnostics = {
+                "configSource": snapshot_log_context.get("configSource", ""),
+                "storageMode": snapshot_log_context.get("storageMode", ""),
+                "attachmentField": snapshot_log_context.get("attachmentField", ""),
+                "uploadEndpoint": snapshot_log_context.get("uploadEndpoint", ""),
+            }
+            for key in ("feishuCode", "feishuLogId", "requestUrl"):
+                if error_details.get(key) not in ("", None):
+                    diagnostics[key] = error_details[key]
+            self.send_json(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "diagnostics": {key: value for key, value in diagnostics.items() if value not in ("", None)},
+                },
+                status=500,
+            )
 
 
 def build_handler(static_dir: Path, repository: ReasonRepository):

@@ -1442,7 +1442,22 @@ async function saveSnapshotToFeishu() {
     });
     const payload = await response.json();
     if (!response.ok || !payload?.ok) {
-      throw new Error(payload?.error || "保存周报快照失败");
+      const diagnostics = payload?.diagnostics || {};
+      const hints = [];
+      if (diagnostics.storageMode) {
+        hints.push(`storageMode=${diagnostics.storageMode}`);
+      }
+      if ("attachmentField" in diagnostics) {
+        hints.push(`attachmentField=${diagnostics.attachmentField || "未配置"}`);
+      }
+      if (diagnostics.feishuCode) {
+        hints.push(`feishuCode=${diagnostics.feishuCode}`);
+      }
+      if (diagnostics.feishuLogId) {
+        hints.push(`feishuLogId=${diagnostics.feishuLogId}`);
+      }
+      const detail = payload?.error || "保存周报快照失败";
+      throw new Error(hints.length ? `${hints.join(", ")}; ${detail}` : detail);
     }
     runtime.lastSyncedAt = payload.savedAt || new Date().toISOString();
     if (payload.storageMode === "bitable_attachment") {
