@@ -60,8 +60,12 @@ def http_multipart(method: str, url: str, fields: dict[str, str], files: list[di
     if headers:
         req_headers.update(headers)
     req = request.Request(url, data=bytes(body), headers=req_headers, method=method)
-    with request.urlopen(req, context=SSL_CONTEXT, timeout=60) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with request.urlopen(req, context=SSL_CONTEXT, timeout=60) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"HTTP {exc.code} {url}: {detail}") from exc
 
 
 def get_tenant_access_token(app_id: str, app_secret: str) -> str:
