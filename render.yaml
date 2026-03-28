@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: weekly-report-online
+    runtime: python
+    rootDir: weekly-report-delivery
+    plan: free
+    buildCommand: "pip install -r requirements.txt && python3 -m py_compile online_sync_server.py sync_to_feishu.py pull_feishu_reasons_to_json.py build_weekly_report_json.py"
+    startCommand: "python3 online_sync_server.py --port $PORT"
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.5

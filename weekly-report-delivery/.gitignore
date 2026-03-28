@@ -1,0 +1,5 @@
+runtime/
+__pycache__/
+*.pyc
+feishu_sync_config.json
+.DS_Store

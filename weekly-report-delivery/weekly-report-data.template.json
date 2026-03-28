@@ -1,0 +1,293 @@
+{
+  "title": "行业二组周报",
+  "period": "2026年03月16日 - 2026年03月22日",
+  "audience": "直属上级",
+  "heroSummary": "请填写本周整体陈述，建议只写1到2句话。",
+  "metrics": [
+    {
+      "section": "core",
+      "label": "SZA成交金额",
+      "value": "0.00",
+      "note": "点击跳到 SZA 经营数据。"
+    },
+    {
+      "section": "core",
+      "label": "非SZA成交金额",
+      "value": "0.00",
+      "note": "点击跳到非SZA经营数据。"
+    },
+    {
+      "section": "core",
+      "label": "SZA预估毛利率",
+      "value": "0.00%",
+      "note": "执行订单口径。"
+    },
+    {
+      "section": "core",
+      "label": "非SZA预估毛利率",
+      "value": "0.00%",
+      "note": "执行订单口径。"
+    },
+    {
+      "section": "margin",
+      "label": "压价覆盖率",
+      "value": "0.00%",
+      "note": "确认订单口径。"
+    },
+    {
+      "section": "margin",
+      "label": "压价成功率",
+      "value": "0.00%",
+      "note": "确认订单口径。"
+    },
+    {
+      "section": "margin",
+      "label": "压价提升毛利率",
+      "value": "0.00%",
+      "note": "执行订单口径。"
+    },
+    {
+      "section": "risk",
+      "label": "待协调事项",
+      "value": "0项",
+      "note": "周会后填写。"
+    }
+  ],
+  "summaries": [
+    {
+      "title": "经营表现",
+      "copy": "请填写经营表现。"
+    },
+    {
+      "title": "专项推进",
+      "copy": "请填写专项推进。"
+    },
+    {
+      "title": "事项管理",
+      "copy": "请填写事项管理。"
+    }
+  ],
+  "highlights": [
+    {
+      "title": "重点提示1",
+      "copy": "请填写重点提示。",
+      "section": "core-section"
+    },
+    {
+      "title": "重点提示2",
+      "copy": "请填写重点提示。",
+      "section": "margin-section"
+    },
+    {
+      "title": "重点提示3",
+      "copy": "请填写重点提示。",
+      "section": "risk-section"
+    }
+  ],
+  "sections": {
+    "core": {
+      "quickLabel": "SZA / 非SZA 双分区",
+      "sourceLinks": [
+        {
+          "label": "查看经营原表预览",
+          "href": "#core-raw-source"
+        }
+      ],
+      "sza": {
+        "miniMetrics": [
+          {
+            "label": "成交金额",
+            "value": "0.00"
+          },
+          {
+            "label": "订单数量",
+            "value": "0"
+          },
+          {
+            "label": "预估毛利额",
+            "value": "0.00"
+          },
+          {
+            "label": "预估毛利率",
+            "value": "0.00%"
+          },
+          {
+            "label": "压价覆盖率",
+            "value": "0.00%"
+          },
+          {
+            "label": "压价成功率",
+            "value": "0.00%"
+          },
+          {
+            "label": "压价提升毛利率",
+            "value": "0.00%"
+          }
+        ],
+        "spuBreakdown": [
+          [
+            "SPU类目示例",
+            "0",
+            "0.00%",
+            "0.00%"
+          ]
+        ],
+        "narratives": [
+          {
+            "title": "SZA经营结论",
+            "copy": "请填写SZA经营结论。"
+          }
+        ]
+      },
+      "nonSza": {
+        "miniMetrics": [
+          {
+            "label": "成交金额",
+            "value": "0.00"
+          },
+          {
+            "label": "订单数量",
+            "value": "0"
+          },
+          {
+            "label": "预估毛利额",
+            "value": "0.00"
+          },
+          {
+            "label": "预估毛利率",
+            "value": "0.00%"
+          },
+          {
+            "label": "压价覆盖率",
+            "value": "0.00%"
+          },
+          {
+            "label": "压价成功率",
+            "value": "0.00%"
+          },
+          {
+            "label": "压价提升毛利率",
+            "value": "0.00%"
+          }
+        ],
+        "customers": [
+          [
+            "客户1",
+            "0.00",
+            "0.00",
+            "0.00%",
+            "--",
+            ""
+          ],
+          [
+            "客户2",
+            "0.00",
+            "0.00",
+            "0.00%",
+            "--",
+            ""
+          ]
+        ],
+        "narratives": [
+          {
+            "title": "非SZA经营结论",
+            "copy": "请填写非SZA经营结论。"
+          }
+        ]
+      },
+      "rawSource": {
+        "title": "经营数据原表预览",
+        "description": "请填写原表说明。",
+        "headers": [
+          "来源",
+          "广告主名称",
+          "执行价(含税)"
+        ],
+        "rows": [
+          [
+            "确认订单",
+            "示例客户",
+            "0.00"
+          ]
+        ]
+      }
+    },
+    "margin": {
+      "quickLabel": "覆盖率 + 成功率 + 原因TOP",
+      "sourceLinks": [
+        {
+          "label": "查看专项原表预览",
+          "href": "#margin-raw-source"
+        }
+      ],
+      "miniMetrics": [
+        {
+          "label": "压价覆盖率",
+          "value": "0.00%"
+        },
+        {
+          "label": "压价成功率",
+          "value": "0.00%"
+        },
+        {
+          "label": "压价提升毛利率",
+          "value": "0.00%"
+        },
+        {
+          "label": "低毛利订单数",
+          "value": "0"
+        }
+      ],
+      "reasons": [
+        [
+          "原因1",
+          "0",
+          "0.00",
+          "中",
+          "动作"
+        ]
+      ],
+      "narratives": [
+        {
+          "title": "专项结论",
+          "copy": "请填写专项结论。"
+        }
+      ],
+      "rawSource": {
+        "title": "低毛利与压价原表预览",
+        "description": "请填写原表说明。",
+        "headers": [
+          "广告主名称",
+          "压价结果"
+        ],
+        "rows": [
+          [
+            "示例客户",
+            "返点有提升"
+          ]
+        ]
+      }
+    },
+    "risk": {
+      "quickLabel": "周会总结自动排版",
+      "sourceLinks": [
+        {
+          "label": "查看事项原表",
+          "href": "#"
+        }
+      ],
+      "items": [
+        {
+          "title": "事项1",
+          "category": "分类",
+          "progress": "当前进展",
+          "risk": "风险点",
+          "support": "需协调事项",
+          "nextAction": "下周动作",
+          "owner": "责任人",
+          "status": "watch"
+        }
+      ]
+    }
+  }
+}
