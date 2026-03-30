@@ -2,6 +2,7 @@ const DEFAULT_SPECIAL_ITEMS = [
   {
     id: "electronic-contract",
     title: "电子合同",
+    tableImportEnabled: true,
     summaryTitle: "行业二组电子合同签署情况汇总（截止2026年03月20日）",
     summaryMetrics: [
       { label: "总完成率", value: "97.01%" },
@@ -11,6 +12,7 @@ const DEFAULT_SPECIAL_ITEMS = [
     ],
     noteLabel: "原因/跟进说明",
     note: "",
+    importedTable: null,
     removable: false
   },
   {
@@ -180,6 +182,7 @@ const SPU_CATEGORY_HEADER = "SPU类目";
 const EXCLUDED_SPU_KEYWORD = "汽车";
 const LOW_MARGIN_THRESHOLD = 14;
 const LOW_MARGIN_FEEDBACK_PREVIEW_LIMIT = 10;
+const SPECIAL_TABLE_PREVIEW_LIMIT = 50;
 const LOW_MARGIN_REASONS = [
   "sza年框账号",
   "客户指定合作账号",
@@ -1117,6 +1120,66 @@ function normalizeSummaryMetrics(metrics) {
     .filter((metric) => metric.label || metric.value);
 }
 
+function normalizeImportedTable(table) {
+  if (!table || typeof table !== "object") return null;
+  const headers = (Array.isArray(table.headers) ? table.headers : [])
+    .map((header, index) => String(header || `列${index + 1}`).trim() || `列${index + 1}`)
+    .filter(Boolean);
+  const rows = (Array.isArray(table.rows) ? table.rows : [])
+    .map((row) => (Array.isArray(row) ? row : [])
+      .slice(0, headers.length || undefined)
+      .map((cell) => String(cell || "").trim()))
+    .filter((row) => row.some(Boolean));
+  if (!headers.length && !rows.length) return null;
+  return {
+    fileName: String(table.fileName || "").trim(),
+    importedAt: String(table.importedAt || "").trim(),
+    totalRows: Math.max(Number(table.totalRows) || rows.length, rows.length),
+    truncated: Boolean(table.truncated),
+    headers,
+    rows
+  };
+}
+
+function buildImportedTablePreview(fileName, matrix) {
+  const cleanedRows = (Array.isArray(matrix) ? matrix : [])
+    .map((row) => (Array.isArray(row) ? row : []).map((cell) => String(cell || "").trim()))
+    .filter((row) => row.some(Boolean));
+  if (!cleanedRows.length) {
+    throw new Error("表格内容为空。");
+  }
+
+  const headerScanRows = cleanedRows.slice(0, Math.min(cleanedRows.length, 5));
+  let headerRowIndex = 0;
+  let headerCellCount = 0;
+  headerScanRows.forEach((row, index) => {
+    const count = row.filter(Boolean).length;
+    if (count > headerCellCount) {
+      headerCellCount = count;
+      headerRowIndex = index;
+    }
+  });
+
+  const rawHeaders = cleanedRows[headerRowIndex] || [];
+  const headers = rawHeaders.map((header, index) => String(header || `列${index + 1}`).trim() || `列${index + 1}`);
+  const bodyRows = cleanedRows
+    .slice(headerRowIndex + 1)
+    .filter((row) => row.some(Boolean))
+    .map((row) => headers.map((_, index) => String(row[index] || "").trim()));
+
+  // 只保留预览所需行数，避免把超大明细整体塞进本地缓存和在线状态。
+  const previewRows = bodyRows.slice(0, SPECIAL_TABLE_PREVIEW_LIMIT);
+
+  return {
+    fileName: String(fileName || "").trim(),
+    importedAt: new Date().toISOString(),
+    totalRows: bodyRows.length,
+    truncated: bodyRows.length > previewRows.length,
+    headers,
+    rows: previewRows
+  };
+}
+
 function cloneDefaultSpecialItems() {
   return JSON.parse(JSON.stringify(DEFAULT_SPECIAL_ITEMS));
 }
@@ -1130,10 +1193,12 @@ function normalizeSpecialItems(items = []) {
     return {
       id: template.id,
       title: String(existing.title || template.title).trim(),
+      tableImportEnabled: Boolean(existing.tableImportEnabled ?? template.tableImportEnabled),
       summaryTitle: String(existing.summaryTitle || template.summaryTitle || "").trim(),
       summaryMetrics: normalizeSummaryMetrics(existing.summaryMetrics?.length ? existing.summaryMetrics : template.summaryMetrics),
       noteLabel: String(existing.noteLabel || template.noteLabel || "填写内容").trim(),
       note: String(existing.note || ""),
+      importedTable: normalizeImportedTable(existing.importedTable || template.importedTable),
       removable: false
     };
   });
@@ -1142,10 +1207,12 @@ function normalizeSpecialItems(items = []) {
     .map((item, index) => ({
       id: String(item.id || `custom-${index}`),
       title: String(item.title || "新增事项").trim(),
+      tableImportEnabled: Boolean(item.tableImportEnabled),
       summaryTitle: String(item.summaryTitle || "").trim(),
       summaryMetrics: normalizeSummaryMetrics(item.summaryMetrics),
       noteLabel: String(item.noteLabel || "填写内容").trim(),
       note: String(item.note || ""),
+      importedTable: normalizeImportedTable(item.importedTable),
       removable: true
     }));
   return [...normalizedDefaults, ...customItems];
@@ -1614,6 +1681,52 @@ function renderRiskBoard() {
     }
     article.appendChild(head);
 
+    if (item.tableImportEnabled) {
+      const importActions = document.createElement("div");
+      importActions.className = "matter-import-actions";
+
+      const uploadLabel = document.createElement("label");
+      uploadLabel.className = "upload-btn section-action-btn matter-upload-btn";
+      uploadLabel.innerHTML = `
+        <span>导入表格</span>
+        <input
+          type="file"
+          accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"
+          data-import-special-item="${index}"
+        />
+      `;
+      importActions.appendChild(uploadLabel);
+
+      if (item.importedTable?.rows?.length) {
+        const clearBtn = document.createElement("button");
+        clearBtn.type = "button";
+        clearBtn.className = "ghost-btn section-action-btn";
+        clearBtn.textContent = "清空表格";
+        clearBtn.dataset.clearSpecialTable = String(index);
+        importActions.appendChild(clearBtn);
+      }
+
+      article.appendChild(importActions);
+
+      const importMeta = document.createElement("p");
+      importMeta.className = "matter-import-meta";
+      if (item.importedTable?.rows?.length) {
+        const importedAt = item.importedTable.importedAt
+          ? new Date(item.importedTable.importedAt).toLocaleString("zh-CN")
+          : "";
+        const previewCount = item.importedTable.rows.length;
+        const totalCount = item.importedTable.totalRows || previewCount;
+        importMeta.textContent = [
+          item.importedTable.fileName ? `已导入：${item.importedTable.fileName}` : "",
+          importedAt ? `导入时间：${importedAt}` : "",
+          `预览 ${previewCount}/${totalCount} 行${item.importedTable.truncated ? "（已截断）" : ""}`
+        ].filter(Boolean).join("；");
+      } else {
+        importMeta.textContent = "支持导入 Excel / CSV，导入后会在卡片下方保留表格预览，并随本地缓存和线上同步一起保存。";
+      }
+      article.appendChild(importMeta);
+    }
+
     if (item.summaryTitle) {
       const summaryTitle = document.createElement("p");
       summaryTitle.className = "matter-summary-title";
@@ -1651,6 +1764,44 @@ function renderRiskBoard() {
     noteField.appendChild(textarea);
     article.appendChild(noteField);
 
+    if (item.importedTable?.headers?.length && item.importedTable?.rows?.length) {
+      const previewWrap = document.createElement("div");
+      previewWrap.className = "matter-table-preview";
+
+      const tableWrap = document.createElement("div");
+      tableWrap.className = "table-wrap matter-table-wrap";
+      const table = document.createElement("table");
+      table.className = "report-table";
+
+      const thead = document.createElement("thead");
+      const headRow = document.createElement("tr");
+      item.importedTable.headers.forEach((header) => {
+        const th = document.createElement("th");
+        th.textContent = header;
+        headRow.appendChild(th);
+      });
+      thead.appendChild(headRow);
+      table.appendChild(thead);
+
+      const tbody = document.createElement("tbody");
+      item.importedTable.rows.forEach((row) => {
+        const tr = document.createElement("tr");
+        row.forEach((cell) => {
+          const td = document.createElement("td");
+          td.textContent = cell;
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      tableWrap.appendChild(table);
+      previewWrap.appendChild(tableWrap);
+
+      el.specialMatterBoard.appendChild(article);
+      article.appendChild(previewWrap);
+      return;
+    }
+
     el.specialMatterBoard.appendChild(article);
   });
 }
@@ -1664,6 +1815,14 @@ function bindDynamicInputs() {
   document.querySelectorAll("[data-remove-special-item]").forEach((node) => {
     node.removeEventListener("click", handleRemoveSpecialMatter);
     node.addEventListener("click", handleRemoveSpecialMatter);
+  });
+  document.querySelectorAll("[data-import-special-item]").forEach((node) => {
+    node.removeEventListener("change", handleSpecialTableImport);
+    node.addEventListener("change", handleSpecialTableImport);
+  });
+  document.querySelectorAll("[data-clear-special-table]").forEach((node) => {
+    node.removeEventListener("click", handleClearSpecialTable);
+    node.addEventListener("click", handleClearSpecialTable);
   });
 }
 
@@ -1810,12 +1969,54 @@ function createCustomSpecialMatter() {
   return {
     id: `custom-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
     title: "新增事项",
+    tableImportEnabled: false,
     summaryTitle: "",
     summaryMetrics: [],
     noteLabel: "填写内容",
     note: "",
+    importedTable: null,
     removable: true
   };
+}
+
+async function handleSpecialTableImport(event) {
+  const index = Number(event.currentTarget.dataset.importSpecialItem);
+  const [file] = event.currentTarget.files || [];
+  if (!Number.isFinite(index) || !file) return;
+  if (typeof XLSX === "undefined") {
+    alert("Excel 导入库加载失败，请刷新页面后重试。");
+    event.currentTarget.value = "";
+    return;
+  }
+
+  try {
+    const buffer = await file.arrayBuffer();
+    const workbook = XLSX.read(buffer, { type: "array", raw: false, defval: "" });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" });
+    const importedTable = buildImportedTablePreview(file.name, matrix);
+    const target = state.sections.risk.specialItems[index];
+    if (!target) {
+      throw new Error("未找到要写入的事项卡片。");
+    }
+    target.importedTable = importedTable;
+    render();
+    scheduleOnlineReportSync({ immediate: true });
+  } catch (error) {
+    alert(`导入表格失败：${error.message || "请检查表格格式。"}`);
+  } finally {
+    event.currentTarget.value = "";
+  }
+}
+
+function handleClearSpecialTable(event) {
+  const index = Number(event.currentTarget.dataset.clearSpecialTable);
+  if (!Number.isFinite(index)) return;
+  const target = state.sections.risk.specialItems[index];
+  if (!target) return;
+  target.importedTable = null;
+  render();
+  scheduleOnlineReportSync({ immediate: true });
 }
 
 function bindEditable() {

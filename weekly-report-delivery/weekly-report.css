@@ -814,6 +814,45 @@ body {
   letter-spacing: 0.04em;
 }
 
+.matter-import-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.matter-upload-btn {
+  min-width: 168px;
+}
+
+.matter-upload-btn input {
+  display: none;
+}
+
+.matter-import-meta {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.matter-table-preview {
+  margin-top: 16px;
+}
+
+.matter-table-wrap {
+  margin-top: 0;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  border-radius: 18px;
+  background: rgba(248, 250, 252, 0.72);
+  padding: 2px 0;
+}
+
+.matter-table-preview .report-table th,
+.matter-table-preview .report-table td {
+  white-space: nowrap;
+}
+
 .matter-remove-btn {
   flex-shrink: 0;
 }
