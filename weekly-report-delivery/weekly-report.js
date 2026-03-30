@@ -434,6 +434,11 @@ async function syncOnlineReportState() {
   try {
     const reportPayload = JSON.parse(JSON.stringify(state));
     await syncOnlineReasonsBeforeReportSave(reportPayload);
+    (reportPayload?.sections?.margin?.orders || []).forEach((order) => {
+      if (order && "reasonDirty" in order) {
+        delete order.reasonDirty;
+      }
+    });
     const response = await fetch(`${getOnlineApiBase()}/api/report-state`, {
       method: "POST",
       headers: { "Content-Type": "application/json; charset=utf-8" },
@@ -466,7 +471,7 @@ function markPendingChanges() {
 
 async function syncOnlineReasonsBeforeReportSave(reportPayload) {
   const items = (reportPayload?.sections?.margin?.orders || [])
-    .filter((order) => String(order?.purchaseOrderNo || "").trim())
+    .filter((order) => order?.reasonDirty && String(order?.purchaseOrderNo || "").trim())
     .map((order) => ({
       purchaseOrderNo: String(order.purchaseOrderNo || "").trim(),
       reason: String(order.reason || "").trim()
@@ -486,6 +491,12 @@ async function syncOnlineReasonsBeforeReportSave(reportPayload) {
   if (!response.ok || !payload?.ok) {
     throw new Error(payload?.error || "低毛利原因同步失败");
   }
+
+  (reportPayload?.sections?.margin?.orders || []).forEach((order) => {
+    if (order && order.reasonDirty) {
+      delete order.reasonDirty;
+    }
+  });
 }
 
 function startOnlinePolling() {
@@ -1318,6 +1329,7 @@ function normalizeLoadedReportData(data) {
       reason: String(order.reason || "").trim(),
       reasonEditor: String(order.reasonEditor || "").trim(),
       reasonUpdatedAt: String(order.reasonUpdatedAt || "").trim(),
+      reasonDirty: Boolean(order.reasonDirty),
       exportFields: order.exportFields || {}
     }));
 
@@ -1619,7 +1631,9 @@ async function handleLowMarginReasonChange(event) {
   const index = Number(event.currentTarget.dataset.index);
   const order = state.sections.margin.orders[index];
   const nextReason = event.currentTarget.value;
+  if (!order || String(order.reason || "") === nextReason) return;
   order.reason = nextReason;
+  order.reasonDirty = true;
   refreshLowMarginSummary();
   render();
   markPendingChanges();
@@ -2292,7 +2306,11 @@ async function importLowMarginExcel(event) {
 
     (state.sections.margin.orders || []).forEach((order) => {
       if (reasonByOrderNo.has(order.purchaseOrderNo)) {
-        order.reason = reasonByOrderNo.get(order.purchaseOrderNo);
+        const nextReason = reasonByOrderNo.get(order.purchaseOrderNo);
+        if (String(order.reason || "") !== nextReason) {
+          order.reason = nextReason;
+          order.reasonDirty = true;
+        }
       }
     });
 
