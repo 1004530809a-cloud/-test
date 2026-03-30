@@ -1120,6 +1120,25 @@ function normalizeSummaryMetrics(metrics) {
     .filter((metric) => metric.label || metric.value);
 }
 
+function isRateLikeHeader(header) {
+  return String(header || "").includes("率");
+}
+
+function formatImportedTableCell(header, value) {
+  const rawText = String(value || "").trim();
+  if (!rawText || !isRateLikeHeader(header)) return rawText;
+
+  const numericText = rawText.replace(/,/g, "").replace(/%/g, "").trim();
+  const parsed = Number(numericText);
+  if (!Number.isFinite(parsed)) return rawText;
+
+  const percentValue = rawText.includes("%")
+    ? parsed
+    : (Math.abs(parsed) <= 1 ? parsed * 100 : parsed);
+
+  return `${percentValue.toFixed(2)}%`;
+}
+
 function normalizeImportedTable(table) {
   if (!table || typeof table !== "object") return null;
   const headers = (Array.isArray(table.headers) ? table.headers : [])
@@ -1128,7 +1147,7 @@ function normalizeImportedTable(table) {
   const rows = (Array.isArray(table.rows) ? table.rows : [])
     .map((row) => (Array.isArray(row) ? row : [])
       .slice(0, headers.length || undefined)
-      .map((cell) => String(cell || "").trim()))
+      .map((cell, index) => formatImportedTableCell(headers[index], cell)))
     .filter((row) => row.some(Boolean));
   if (!headers.length && !rows.length) return null;
   return {
@@ -1165,7 +1184,7 @@ function buildImportedTablePreview(fileName, matrix) {
   const bodyRows = cleanedRows
     .slice(headerRowIndex + 1)
     .filter((row) => row.some(Boolean))
-    .map((row) => headers.map((_, index) => String(row[index] || "").trim()));
+    .map((row) => headers.map((header, index) => formatImportedTableCell(header, row[index])));
 
   // 只保留预览所需行数，避免把超大明细整体塞进本地缓存和在线状态。
   const previewRows = bodyRows.slice(0, SPECIAL_TABLE_PREVIEW_LIMIT);
