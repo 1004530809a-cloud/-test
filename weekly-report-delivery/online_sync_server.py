@@ -366,18 +366,23 @@ class ReasonRepository:
             order_no = str((item or {}).get("purchaseOrderNo") or "").strip()
             if not order_no or order_no not in orders:
                 continue
+            order = orders[order_no]
+            next_reason = normalize_reason((item or {}).get("reason"))
+            current_reason = normalize_reason(order.get("reason"))
+            # 前端会把整张低毛利表一并提交，这里只保留真正发生变化的原因，
+            # 避免每次同步都对飞书做几百次无效 upsert，导致请求长时间卡住。
+            if next_reason == current_reason:
+                continue
             normalized_updates.append(
                 {
                     "purchaseOrderNo": order_no,
-                    "reason": normalize_reason((item or {}).get("reason")),
-                    "order": orders[order_no],
+                    "reason": next_reason,
+                    "order": order,
                 }
             )
 
         if not normalized_updates:
-            fresh = self.build_report_data()
-            self.save_shared_report(fresh, changed_at=changed_at, editor=editor)
-            return fresh
+            return report
 
         config = self.load_feishu_config()
         if config:
