@@ -300,17 +300,20 @@ const el = {
 
 async function init() {
   await loadOnlineConfig();
-  const restoredFromLocalCache = restoreFromLocalCache();
+  const restoredCacheMeta = restoreFromLocalCache();
   syncInputsFromState();
   bindControls();
   render();
   if (runtime.onlineEnabled) {
-    if (restoredFromLocalCache) {
+    if (restoredCacheMeta?.hasPendingChanges) {
       runtime.hasPendingChanges = true;
     } else {
+      if (restoredCacheMeta?.restored) {
+        clearPersistedStateCache();
+      }
       await loadOnlineState();
     }
-  } else if (!restoredFromLocalCache) {
+  } else if (!restoredCacheMeta?.restored) {
     await loadDefaultGeneratedData();
   }
   updateOnlineSyncStatus();
@@ -462,10 +465,10 @@ async function syncOnlineReportState() {
 }
 
 function markPendingChanges() {
-  persistStateToLocalCache();
+  runtime.hasPendingChanges = true;
+  persistStateToLocalCache({ hasPendingChanges: true });
   if (!runtime.onlineEnabled) return;
   runtime.pendingStatePayload = JSON.parse(JSON.stringify(state));
-  runtime.hasPendingChanges = true;
   updateOnlineSyncStatus();
 }
 
@@ -2337,9 +2340,15 @@ function extractOwnerName(value) {
   return [...new Set(names)].join("、");
 }
 
-function persistStateToLocalCache() {
+function persistStateToLocalCache(options = {}) {
   try {
-    localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(state));
+    const payload = {
+      version: 2,
+      hasPendingChanges: Boolean(options.hasPendingChanges ?? runtime.hasPendingChanges),
+      savedAt: new Date().toISOString(),
+      report: state
+    };
+    localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(payload));
   } catch (error) {
     // Ignore storage errors in restricted browser modes.
   }
@@ -2356,14 +2365,22 @@ function clearPersistedStateCache() {
 function restoreFromLocalCache() {
   try {
     const cached = localStorage.getItem(LOCAL_CACHE_KEY);
-    if (!cached) return false;
+    if (!cached) return { restored: false, hasPendingChanges: false };
     const parsed = JSON.parse(cached);
+    const isWrappedCache = parsed && typeof parsed === "object" && parsed.version === 2 && parsed.report;
+    const cachedReport = isWrappedCache ? parsed.report : parsed;
+    const hasPendingChanges = isWrappedCache ? Boolean(parsed.hasPendingChanges) : !runtime.onlineEnabled;
+
+    if (runtime.onlineEnabled && !hasPendingChanges) {
+      return { restored: false, hasPendingChanges: false, legacyCache: !isWrappedCache };
+    }
+
     Object.keys(state).forEach((key) => delete state[key]);
-    Object.assign(state, parsed);
-    return true;
+    Object.assign(state, cachedReport);
+    return { restored: true, hasPendingChanges };
   } catch (error) {
     // Ignore invalid cache and continue with bundled data.
-    return false;
+    return { restored: false, hasPendingChanges: false };
   }
 }
 
