@@ -354,8 +354,16 @@ class ReasonRepository:
         )
         self.save_shared_report(self.build_report_data(), changed_at=changed_at, editor=editor)
 
-    def bulk_upsert_reasons(self, period: str, updates: list[dict], editor: str, changed_at: str) -> dict:
-        report = self.build_report_data()
+    def bulk_upsert_reasons(
+        self,
+        period: str,
+        updates: list[dict],
+        editor: str,
+        changed_at: str,
+        cached_report: dict | None = None,
+    ) -> tuple[dict, int]:
+        # 优先复用共享周报快照做差异判断，避免每次“同步到线上”都先去飞书全量拉两遍原因明细。
+        report = deepcopy(cached_report) if isinstance(cached_report, dict) else (self.load_shared_report() or self.load_base_data())
         orders = {
             str(item.get("purchaseOrderNo") or "").strip(): item
             for item in report.get("sections", {}).get("margin", {}).get("orders", [])
@@ -382,7 +390,7 @@ class ReasonRepository:
             )
 
         if not normalized_updates:
-            return report
+            return report, 0
 
         config = self.load_feishu_config()
         if config:
@@ -400,7 +408,7 @@ class ReasonRepository:
             merged_data = self.build_report_data()
             self.save_shared_report(merged_data, changed_at=changed_at, editor=editor)
             sync_snapshot(merged_data, config, access_token)
-            return merged_data
+            return merged_data, len(normalized_updates)
 
         store = self.load_store()
         existing_details = deepcopy(store.get("periods", {}).get(period, {}).get("reasons", {}))
@@ -425,7 +433,7 @@ class ReasonRepository:
         self.save_store(store)
         merged_data = self.build_report_data()
         self.save_shared_report(merged_data, changed_at=changed_at, editor=editor)
-        return merged_data
+        return merged_data, len(normalized_updates)
 
     def build_report_data(self) -> dict:
         report = self.load_shared_report() or self.load_base_data()
@@ -690,19 +698,26 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
     def handle_bulk_reason_save(self):
         try:
             payload = self.read_json_body()
-            report = self.repository.build_report_data()
-            period = str(payload.get("period") or report.get("period") or "").strip()
+            # 这里仅用于读取当前周期和做本次差异比较，不需要先触发飞书全量拉取。
+            cached_report = self.repository.load_shared_report() or self.repository.load_base_data()
+            period = str(payload.get("period") or cached_report.get("period") or "").strip()
             updates = payload.get("items") or []
             if not isinstance(updates, list):
                 return self.send_json({"ok": False, "error": "批量原因数据格式不正确。"}, status=400)
             editor = normalize_reason(payload.get("editor")) or "网页填写"
             changed_at = now_iso()
-            fresh = self.repository.bulk_upsert_reasons(period=period, updates=updates, editor=editor, changed_at=changed_at)
+            fresh, changed_count = self.repository.bulk_upsert_reasons(
+                period=period,
+                updates=updates,
+                editor=editor,
+                changed_at=changed_at,
+                cached_report=cached_report,
+            )
             self.send_json(
                 {
                     "ok": True,
                     "message": "已批量保存",
-                    "updatedCount": len(updates),
+                    "updatedCount": changed_count,
                     "report": fresh,
                 }
             )
