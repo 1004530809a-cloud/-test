@@ -911,7 +911,7 @@ function buildReportData(confirmRows, executeRows, confirmName, executeName, con
 function calcCoreMetrics(confirmRows, executeRows, isSza) {
   const confirmScope = confirmRows.filter((row) => row.isSza === isSza);
   const executeScope = executeRows.filter((row) => row.isSza === isSza);
-  const covered = confirmScope.filter((row) => row.priceResult && row.rebateSum !== 0);
+  const covered = confirmScope.filter((row) => row.priceResult);
   const success = covered.filter((row) => row.priceResult === "返点有提升");
   const executeWithRebate = executeScope.filter((row) => row.rebateSum !== 0);
 
@@ -935,7 +935,7 @@ function calcSzaSpuBreakdown(confirmRows, executeRows) {
   return categories.map((category) => {
     const confirmScope = confirmRows.filter((row) => row.isSza && row.spuCategory === category);
     const executeScope = executeRows.filter((row) => row.isSza && row.spuCategory === category);
-    const covered = confirmScope.filter((row) => row.priceResult && row.rebateSum !== 0);
+    const covered = confirmScope.filter((row) => row.priceResult);
     const success = covered.filter((row) => row.priceResult === "返点有提升");
     const executeWithRebate = executeScope.filter((row) => row.rebateSum !== 0);
 

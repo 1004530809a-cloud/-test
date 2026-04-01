@@ -437,7 +437,7 @@ def calc_core_metrics(rows, execute_rows, is_sza: bool):
     total_income_execute = sum(row["actual_income_no_tax"] for row in execute_scope)
     total_gross_profit_execute = sum(row["gross_profit"] for row in execute_scope)
 
-    covered = [row for row in confirm_scope if row["price_result"] and row["rebate_sum"] != 0]
+    covered = [row for row in confirm_scope if row["price_result"]]
     success = [row for row in covered if row["price_result"] == "返点有提升"]
 
     execute_with_rebate = [row for row in execute_scope if row["rebate_sum"] != 0]
@@ -540,7 +540,7 @@ def calc_sza_spu_breakdown(confirm_rows, execute_rows):
     for category in categories:
         confirm_scope = [row for row in confirm_rows if row["is_sza"] and row["spu_category"] == category]
         execute_scope = [row for row in execute_rows if row["is_sza"] and row["spu_category"] == category]
-        covered = [row for row in confirm_scope if row["price_result"] and row["rebate_sum"] != 0]
+        covered = [row for row in confirm_scope if row["price_result"]]
         success = [row for row in covered if row["price_result"] == "返点有提升"]
         table.append(
             [
