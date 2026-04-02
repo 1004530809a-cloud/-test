@@ -11,28 +11,46 @@
 - [render.yaml](/Users/sup/Desktop/周报测试/render.yaml)
 - [online_sync_server.py](/Users/sup/Desktop/周报测试/weekly-report-delivery/online_sync_server.py)
 - [weekly-report-online-config.json](/Users/sup/Desktop/周报测试/weekly-report-delivery/weekly-report-online-config.json)
+- [prepare_render_publish_dir.sh](/Users/sup/Desktop/周报测试/prepare_render_publish_dir.sh)
 
 ## 部署前你要知道的边界
 
 - 如果不配飞书环境变量，Render 重启后本地临时原因数据会丢。
 - 所以正式给同事用时，建议一定配置飞书，让飞书成为在线原因主存储。
+- `FEISHU_SYNC_CONFIG_JSON` 里配置的字段名必须和飞书多维表格完全一致；如果配置了 `pdf_attachment`，对应字段必须是“附件”类型。
 - 免费实例可能休眠，第一次打开会慢一点，这和你当前容忍度是匹配的。
 
 ## 部署步骤
 
-1. 把当前目录上传到 GitHub
+1. 准备一个尽量轻的发布目录
+
+如果当前仓库直接推 GitHub 超时，先在本机执行：
+
+```bash
+cd /Users/sup/Desktop/周报测试
+./prepare_render_publish_dir.sh
+```
+
+脚本会生成一个只包含部署必要文件的 `render-publish/` 目录，里面只有：
+
+- [render.yaml](/Users/sup/Desktop/周报测试/render.yaml)
+- [weekly-report-delivery](/Users/sup/Desktop/周报测试/weekly-report-delivery)
+
+然后把 `render-publish/` 作为一个新的轻量 GitHub 仓库推上去。
+
+2. 把发布目录上传到 GitHub
 
 建议上传这个目录作为仓库根目录：
 
 - [render.yaml](/Users/sup/Desktop/周报测试/render.yaml)
 - [weekly-report-delivery](/Users/sup/Desktop/周报测试/weekly-report-delivery)
 
-2. 在 Render 新建 Web Service
+3. 在 Render 新建 Web Service
 
 - 选择刚才的 GitHub 仓库
 - Render 会自动识别 [render.yaml](/Users/sup/Desktop/周报测试/render.yaml)
 
-3. 配置环境变量
+4. 配置环境变量
 
 如果要正式联动飞书，在 Render 的环境变量里新增：
 
@@ -87,7 +105,7 @@
 }
 ```
 
-4. 等部署完成后打开 Render 提供的网址
+5. 等部署完成后打开 Render 提供的网址
 
 访问路径直接是：
 
@@ -95,13 +113,48 @@
 https://你的服务地址/weekly-report.html
 ```
 
+这就是手动同步版的正式固定入口；后续如果要绑自定义域名，再在 Render 后台额外配置即可。
+
+## 部署后先验环境
+
+先不要急着点“保存周报快照到飞书”，先做两步自检：
+
+1. 健康检查：
+
+```text
+https://你的服务地址/api/health
+```
+
+返回里现在会带：
+
+- `build.buildId`
+- `build.generatedAt`
+- `build.files`
+
+Redeploy 后先对照这里的 `buildId`，再去刷新页面，能最快确认 Render 是否已经吃到最新发布包。
+
+2. 飞书快照配置检查：
+
+```text
+https://你的服务地址/api/feishu-config-check
+```
+
+如果 `PDF快照` 已正确建成附件字段，返回里应能看到：
+
+- `configured: true`
+- `storageMode: bitable_attachment`
+- `attachmentField: PDF快照`
+- `attachmentFieldTypeLabel: 附件`
+
 ## 上线后怎么验收
 
 1. 打开网页，左侧不应再只是“本地模式”
-2. 改一条低毛利原因
-3. 看网页 `已填写原因` 是否变化
-4. 看飞书低毛利反馈表是否写入
-5. 看飞书周报快照的 `原因汇总` 是否更新
+2. 先点一次“检查飞书快照配置”，确认网页提示 `PDF快照` 字段可用
+3. 改一个文本框或一条低毛利原因
+4. 点“同步到线上”
+5. 用另一浏览器或无痕窗口打开线上页，确认改动已同步
+6. 看飞书低毛利反馈表 / 周报快照的文本字段是否更新
+7. 点一次“保存周报快照到飞书”，确认 `PDF快照` 字段真正收到附件
 
 ## 我建议的实际做法
 

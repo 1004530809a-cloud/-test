@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -13,12 +14,14 @@ from urllib.parse import parse_qs, urlparse
 from sync_to_feishu import (
     attach_pdf_to_snapshot_record,
     build_reason_summary,
+    get_field_type_label,
     get_tenant_access_token,
     load_low_margin_reason_details,
     sync_snapshot,
     upload_pdf_to_bitable,
     upload_pdf_to_feishu_drive,
     upsert_low_margin_reason,
+    validate_snapshot_attachment_field,
 )
 from report_snapshot_pdf import build_snapshot_pdf
 
@@ -35,6 +38,15 @@ LOW_MARGIN_REASONS = [
     "非行业媒介压价",
     "未压价",
     "客户走单账号",
+]
+
+BUILD_FINGERPRINT_FILES = [
+    "weekly-report.html",
+    "weekly-report.js",
+    "weekly-report.css",
+    "weekly-report-data.generated.json",
+    "online_sync_server.py",
+    "build_weekly_report_json.py",
 ]
 
 
@@ -57,6 +69,46 @@ def mask_token(value: Any) -> str:
     if len(text) <= 8:
         return text
     return f"{text[:4]}...{text[-4:]}"
+
+
+def file_sha1(path: Path) -> str:
+    digest = hashlib.sha1()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def build_deploy_fingerprint(base_dir: Path) -> dict:
+    file_entries = []
+    combined_digest = hashlib.sha1()
+    latest_mtime = 0.0
+
+    for relative_name in BUILD_FINGERPRINT_FILES:
+        path = base_dir / relative_name
+        if not path.exists() or not path.is_file():
+            continue
+        sha1 = file_sha1(path)
+        mtime = path.stat().st_mtime
+        combined_digest.update(relative_name.encode("utf-8"))
+        combined_digest.update(sha1.encode("utf-8"))
+        file_entries.append(
+            {
+                "name": relative_name,
+                "sha1": sha1[:12],
+                "modifiedAt": datetime.fromtimestamp(mtime).astimezone().isoformat(timespec="seconds"),
+            }
+        )
+        latest_mtime = max(latest_mtime, mtime)
+
+    return {
+        "buildId": combined_digest.hexdigest()[:12] if file_entries else "",
+        "generatedAt": datetime.fromtimestamp(latest_mtime).astimezone().isoformat(timespec="seconds") if latest_mtime else "",
+        "files": file_entries,
+    }
 
 
 def build_snapshot_log_context(config: dict | None, config_source: str, report: dict | None = None) -> dict:
@@ -123,6 +175,30 @@ def parse_http_error_details(message: str) -> dict:
     return {key: value for key, value in details.items() if value not in ("", None, {}, [])}
 
 
+def build_snapshot_failure_hint(message: str, diagnostics: dict) -> str:
+    text = str(message or "").strip()
+    attachment_field = str(diagnostics.get("attachmentField") or "").strip()
+    if attachment_field:
+        if "未找到字段" in text:
+            return f'请确认飞书周报快照表里已经创建字段“{attachment_field}”，并且字段名与 FEISHU_SYNC_CONFIG_JSON 完全一致。'
+        if "不是附件字段" in text or "当前类型为" in text:
+            return f'请把飞书周报快照表中的“{attachment_field}”字段改成附件类型后重试。'
+    if diagnostics.get("storageMode") == "bitable_attachment":
+        return "请优先检查周报快照表的 PDF 附件字段、应用权限，以及 FEISHU_SYNC_CONFIG_JSON 配置。"
+    return ""
+
+
+def build_snapshot_config_check_message(attachment_field: str, storage_mode: str, drive_folder_configured: bool) -> str:
+    attachment_field = str(attachment_field or "").strip()
+    if attachment_field:
+        return f'飞书快照配置检查通过：字段“{attachment_field}”已确认是附件类型，可直接保存 PDF 快照。'
+    if storage_mode == "drive":
+        if drive_folder_configured:
+            return "飞书快照配置检查通过：当前未配置 PDF 附件字段，快照将上传到飞书云空间指定目录。"
+        return "飞书快照配置检查通过：当前未配置 PDF 附件字段，快照将上传到飞书云空间根目录。"
+    return "飞书快照配置检查通过。"
+
+
 def log_snapshot_event(event: str, payload: dict):
     print(f"[{event}] {json.dumps(payload, ensure_ascii=False, sort_keys=True)}", flush=True)
 
@@ -185,6 +261,9 @@ class ReasonRepository:
         self.store_path.parent.mkdir(parents=True, exist_ok=True)
         self.store_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def build_deploy_meta(self) -> dict:
+        return build_deploy_fingerprint(self.data_path.resolve().parent)
+
     def load_shared_report(self) -> dict | None:
         store = self.load_store()
         report = store.get("shared_report")
@@ -199,6 +278,13 @@ class ReasonRepository:
         if editor:
             store["shared_report_updated_by"] = editor
         self.save_store(store)
+
+    def get_shared_report_meta(self) -> dict:
+        store = self.load_store()
+        return {
+            "updatedAt": str(store.get("shared_report_updated_at") or "").strip(),
+            "updatedBy": str(store.get("shared_report_updated_by") or "").strip(),
+        }
 
     def get_feishu_config_source(self) -> str:
         if os.environ.get("FEISHU_SYNC_CONFIG_JSON", "").strip():
@@ -328,8 +414,16 @@ class ReasonRepository:
         )
         self.save_shared_report(self.build_report_data(), changed_at=changed_at, editor=editor)
 
-    def bulk_upsert_reasons(self, period: str, updates: list[dict], editor: str, changed_at: str) -> dict:
-        report = self.build_report_data()
+    def bulk_upsert_reasons(
+        self,
+        period: str,
+        updates: list[dict],
+        editor: str,
+        changed_at: str,
+        cached_report: dict | None = None,
+    ) -> tuple[dict, int]:
+        # 优先复用共享周报快照做差异判断，避免每次“同步到线上”都先去飞书全量拉两遍原因明细。
+        report = deepcopy(cached_report) if isinstance(cached_report, dict) else (self.load_shared_report() or self.load_base_data())
         orders = {
             str(item.get("purchaseOrderNo") or "").strip(): item
             for item in report.get("sections", {}).get("margin", {}).get("orders", [])
@@ -340,18 +434,23 @@ class ReasonRepository:
             order_no = str((item or {}).get("purchaseOrderNo") or "").strip()
             if not order_no or order_no not in orders:
                 continue
+            order = orders[order_no]
+            next_reason = normalize_reason((item or {}).get("reason"))
+            current_reason = normalize_reason(order.get("reason"))
+            # 前端会把整张低毛利表一并提交，这里只保留真正发生变化的原因，
+            # 避免每次同步都对飞书做几百次无效 upsert，导致请求长时间卡住。
+            if next_reason == current_reason:
+                continue
             normalized_updates.append(
                 {
                     "purchaseOrderNo": order_no,
-                    "reason": normalize_reason((item or {}).get("reason")),
-                    "order": orders[order_no],
+                    "reason": next_reason,
+                    "order": order,
                 }
             )
 
         if not normalized_updates:
-            fresh = self.build_report_data()
-            self.save_shared_report(fresh, changed_at=changed_at, editor=editor)
-            return fresh
+            return report, 0
 
         config = self.load_feishu_config()
         if config:
@@ -369,7 +468,7 @@ class ReasonRepository:
             merged_data = self.build_report_data()
             self.save_shared_report(merged_data, changed_at=changed_at, editor=editor)
             sync_snapshot(merged_data, config, access_token)
-            return merged_data
+            return merged_data, len(normalized_updates)
 
         store = self.load_store()
         existing_details = deepcopy(store.get("periods", {}).get(period, {}).get("reasons", {}))
@@ -394,7 +493,7 @@ class ReasonRepository:
         self.save_store(store)
         merged_data = self.build_report_data()
         self.save_shared_report(merged_data, changed_at=changed_at, editor=editor)
-        return merged_data
+        return merged_data, len(normalized_updates)
 
     def build_report_data(self) -> dict:
         report = self.load_shared_report() or self.load_base_data()
@@ -445,7 +544,15 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/api/health":
-            return self.send_json({"ok": True, "now": now_iso()})
+            return self.send_json(
+                {
+                    "ok": True,
+                    "now": now_iso(),
+                    "build": self.repository.build_deploy_meta(),
+                }
+            )
+        if parsed.path == "/api/feishu-config-check":
+            return self.handle_feishu_config_check()
         if parsed.path == "/api/report-state":
             return self.handle_report_state()
         if parsed.path == "/api/history":
@@ -490,17 +597,114 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
     def handle_report_state(self):
         try:
             report = self.repository.build_report_data()
+            shared_meta = self.repository.get_shared_report_meta()
             self.send_json(
                 {
                     "ok": True,
                     "mode": "feishu" if self.repository.load_feishu_config() else "local-store",
                     "report": report,
                     "serverTime": now_iso(),
+                    "reportUpdatedAt": shared_meta.get("updatedAt", ""),
+                    "reportUpdatedBy": shared_meta.get("updatedBy", ""),
+                    "build": self.repository.build_deploy_meta(),
                 }
             )
         except Exception as exc:
             print(f"[report_snapshot_error] {exc}", flush=True)
             self.send_json({"ok": False, "error": str(exc)}, status=500)
+
+    def handle_feishu_config_check(self):
+        snapshot_log_context: dict[str, Any] = {}
+        try:
+            config_source = self.repository.get_feishu_config_source()
+            config = self.repository.load_feishu_config()
+            if not config:
+                return self.send_json(
+                    {
+                        "ok": True,
+                        "checkedAt": now_iso(),
+                        "configured": False,
+                        "configSource": config_source,
+                        "storageMode": "local-store",
+                        "message": "当前未配置 FEISHU_SYNC_CONFIG_JSON，保存周报快照会失败。",
+                        "diagnostics": {
+                            "configSource": config_source,
+                        },
+                    }
+                )
+
+            snapshot_log_context.update(build_snapshot_log_context(config, config_source))
+            log_snapshot_event("feishu_config_check_start", snapshot_log_context)
+            access_token = get_tenant_access_token(config["app_id"], config["app_secret"])
+            attachment_field = str(config.get("fields", {}).get("weekly_snapshot", {}).get("pdf_attachment") or "").strip()
+
+            response_payload: dict[str, Any] = {
+                "ok": True,
+                "checkedAt": now_iso(),
+                "configured": True,
+                "configSource": config_source,
+                "storageMode": snapshot_log_context.get("storageMode", "drive"),
+                "attachmentField": attachment_field,
+                "diagnostics": {
+                    key: value
+                    for key, value in snapshot_log_context.items()
+                    if value not in ("", None)
+                },
+            }
+            if attachment_field:
+                attachment_meta = validate_snapshot_attachment_field(config, access_token) or {}
+                response_payload.update(
+                    {
+                        "attachmentFieldId": str(attachment_meta.get("field_id") or "").strip(),
+                        "attachmentFieldType": attachment_meta.get("type"),
+                        "attachmentFieldTypeLabel": get_field_type_label(int(attachment_meta.get("type") or -1)),
+                    }
+                )
+            response_payload["message"] = build_snapshot_config_check_message(
+                attachment_field=attachment_field,
+                storage_mode=str(response_payload.get("storageMode") or ""),
+                drive_folder_configured=bool(snapshot_log_context.get("driveFolderConfigured")),
+            )
+            log_snapshot_event(
+                "feishu_config_check_ok",
+                {
+                    **snapshot_log_context,
+                    "attachmentFieldType": response_payload.get("attachmentFieldType"),
+                    "attachmentFieldId": response_payload.get("attachmentFieldId"),
+                },
+            )
+            return self.send_json(response_payload)
+        except Exception as exc:
+            error_details = parse_http_error_details(str(exc))
+            diagnostics = {
+                "configSource": snapshot_log_context.get("configSource", ""),
+                "storageMode": snapshot_log_context.get("storageMode", ""),
+                "attachmentField": snapshot_log_context.get("attachmentField", ""),
+                "attachmentFieldType": snapshot_log_context.get("attachmentFieldType", ""),
+                "uploadEndpoint": snapshot_log_context.get("uploadEndpoint", ""),
+            }
+            for key in ("feishuCode", "feishuLogId", "requestUrl", "feishuMsg"):
+                if error_details.get(key) not in ("", None):
+                    diagnostics[key] = error_details[key]
+            hint = build_snapshot_failure_hint(str(exc), diagnostics)
+            log_snapshot_event(
+                "feishu_config_check_error",
+                {
+                    **snapshot_log_context,
+                    **error_details,
+                    "message": str(exc),
+                },
+            )
+            return self.send_json(
+                {
+                    "ok": False,
+                    "checkedAt": now_iso(),
+                    "error": str(exc),
+                    "hint": hint,
+                    "diagnostics": {key: value for key, value in diagnostics.items() if value not in ("", None)},
+                },
+                status=500,
+            )
 
     def handle_report_state_save(self):
         try:
@@ -512,6 +716,7 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
             changed_at = now_iso()
             self.repository.save_shared_report(report, changed_at=changed_at, editor=editor)
             fresh = self.repository.build_report_data()
+            shared_meta = self.repository.get_shared_report_meta()
             self.send_json(
                 {
                     "ok": True,
@@ -519,6 +724,8 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
                     "savedAt": changed_at,
                     "mode": "feishu" if self.repository.load_feishu_config() else "local-store",
                     "report": fresh,
+                    "reportUpdatedAt": shared_meta.get("updatedAt", ""),
+                    "reportUpdatedBy": shared_meta.get("updatedBy", ""),
                 }
             )
         except Exception as exc:
@@ -564,19 +771,26 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
     def handle_bulk_reason_save(self):
         try:
             payload = self.read_json_body()
-            report = self.repository.build_report_data()
-            period = str(payload.get("period") or report.get("period") or "").strip()
+            # 这里仅用于读取当前周期和做本次差异比较，不需要先触发飞书全量拉取。
+            cached_report = self.repository.load_shared_report() or self.repository.load_base_data()
+            period = str(payload.get("period") or cached_report.get("period") or "").strip()
             updates = payload.get("items") or []
             if not isinstance(updates, list):
                 return self.send_json({"ok": False, "error": "批量原因数据格式不正确。"}, status=400)
             editor = normalize_reason(payload.get("editor")) or "网页填写"
             changed_at = now_iso()
-            fresh = self.repository.bulk_upsert_reasons(period=period, updates=updates, editor=editor, changed_at=changed_at)
+            fresh, changed_count = self.repository.bulk_upsert_reasons(
+                period=period,
+                updates=updates,
+                editor=editor,
+                changed_at=changed_at,
+                cached_report=cached_report,
+            )
             self.send_json(
                 {
                     "ok": True,
                     "message": "已批量保存",
-                    "updatedCount": len(updates),
+                    "updatedCount": changed_count,
                     "report": fresh,
                 }
             )
@@ -606,6 +820,15 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
             )
             log_snapshot_event("report_snapshot_start", snapshot_log_context)
             access_token = get_tenant_access_token(config["app_id"], config["app_secret"])
+            attachment_field = str(config.get("fields", {}).get("weekly_snapshot", {}).get("pdf_attachment") or "").strip()
+            if attachment_field:
+                attachment_meta = validate_snapshot_attachment_field(config, access_token) or {}
+                snapshot_log_context.update(
+                    {
+                        "attachmentFieldType": attachment_meta.get("type"),
+                        "attachmentFieldId": str(attachment_meta.get("field_id") or "").strip(),
+                    }
+                )
             snapshot_ref = sync_snapshot(report, config, access_token)
             snapshot_log_context.update(
                 {
@@ -622,7 +845,6 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
                 f'{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf'
             )
             pdf_bytes = build_snapshot_pdf(report, generated_at)
-            attachment_field = str(config.get("fields", {}).get("weekly_snapshot", {}).get("pdf_attachment") or "").strip()
             if attachment_field:
                 upload_result = upload_pdf_to_bitable(config, access_token, filename, pdf_bytes)
                 attachment_result = attach_pdf_to_snapshot_record(snapshot_ref, config, access_token, upload_result["file_token"]) or {}
@@ -685,15 +907,18 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
                 "configSource": snapshot_log_context.get("configSource", ""),
                 "storageMode": snapshot_log_context.get("storageMode", ""),
                 "attachmentField": snapshot_log_context.get("attachmentField", ""),
+                "attachmentFieldType": snapshot_log_context.get("attachmentFieldType", ""),
                 "uploadEndpoint": snapshot_log_context.get("uploadEndpoint", ""),
             }
-            for key in ("feishuCode", "feishuLogId", "requestUrl"):
+            for key in ("feishuCode", "feishuLogId", "requestUrl", "feishuMsg"):
                 if error_details.get(key) not in ("", None):
                     diagnostics[key] = error_details[key]
+            hint = build_snapshot_failure_hint(str(exc), diagnostics)
             self.send_json(
                 {
                     "ok": False,
                     "error": str(exc),
+                    "hint": hint,
                     "diagnostics": {key: value for key, value in diagnostics.items() if value not in ("", None)},
                 },
                 status=500,

@@ -18,14 +18,8 @@
       <section class="sidebar-card">
         <h2>数据导入</h2>
         <div class="sidebar-actions">
-          <button id="sampleBtn" class="primary-btn" type="button">恢复示例数据</button>
           <button id="generateFromExcelBtn" class="ghost-btn" type="button">用 Excel 重新生成</button>
           <button id="printBtn" class="ghost-btn" type="button">打印 / 导出 PDF</button>
-          <button id="exportBtn" class="ghost-btn" type="button">导出当前 JSON</button>
-          <label class="upload-btn">
-            <span>导入 JSON</span>
-            <input id="importInput" type="file" accept=".json,application/json" />
-          </label>
         </div>
         <div class="excel-upload-grid">
           <label class="field">
@@ -46,9 +40,13 @@
           <span id="onlineSyncBadge" class="status-badge status-offline">本地模式</span>
           <p id="onlineSyncText" class="sidebar-hint">当前仍按本地 JSON / 本地缓存运行，低毛利原因不会多人实时同步。</p>
           <p id="onlineSyncMeta" class="sidebar-hint online-sync-meta"></p>
+          <p id="snapshotConfigMeta" class="sidebar-hint online-sync-meta"></p>
         </div>
         <div class="sidebar-actions">
+          <button id="syncOnlineBtn" class="primary-btn" type="button">同步到线上</button>
+          <button id="recoverDraftBtn" class="ghost-btn" type="button" hidden>恢复本地草稿</button>
           <button id="saveSnapshotBtn" class="primary-btn" type="button">保存周报快照到飞书</button>
+          <button id="checkSnapshotConfigBtn" class="ghost-btn" type="button">检查飞书快照配置</button>
           <button id="refreshOnlineBtn" class="ghost-btn" type="button">刷新在线数据</button>
           <button id="clearCacheBtn" class="ghost-btn" type="button">清理本地缓存</button>
         </div>
@@ -195,19 +193,17 @@
             <div class="split-head">
               <p class="panel-kicker">Non SZA</p>
               <h4>非SZA经营数据</h4>
-              <p class="split-note">上方核心指标按除华为外全部订单汇总，下面仅单独展示重点客户 TOP5。</p>
+              <p class="split-note">上方核心指标按除华为外全部订单汇总，下面展示全部非SZA客户，并按预估毛利率从低到高排序。</p>
             </div>
             <div class="mini-metrics" id="coreNonSzaMiniMetrics"></div>
             <div class="table-wrap">
               <table class="report-table" id="customerTable">
                 <thead>
                   <tr>
-                    <th>重点客户TOP5摘录</th>
+                    <th>非SZA客户</th>
                     <th>成交金额</th>
                     <th>预估毛利额</th>
                     <th>预估毛利率</th>
-                    <th>环比</th>
-                    <th>负责人</th>
                   </tr>
                 </thead>
                 <tbody></tbody>
@@ -292,9 +288,25 @@
         </div>
 
         <div class="risk-intro is-report-hidden">
-          <p>这一块继续保留人工维护，重点写清当前进展、风险点、需协调事项和下周动作，不放进首页数据矩阵。</p>
+          <p>这里支持两种维护方式：一是直接贴入周会记录自动整理成风险卡片，二是补充电子合同、自动计提、返点进度等专项事项。</p>
+        </div>
+        <div class="meeting-toolbox">
+          <div class="meeting-tool-card">
+            <div class="meeting-tool-head">
+              <div>
+                <p class="panel-kicker">Meeting Notes</p>
+                <h4>周会记录整理入口</h4>
+              </div>
+              <div class="section-actions">
+                <button id="formatMeetingBtn" class="ghost-btn section-action-btn" type="button">整理成事项卡片</button>
+                <button id="addSpecialMatterBtn" class="ghost-btn section-action-btn" type="button">新增事项</button>
+              </div>
+            </div>
+            <textarea id="meetingNotesInput" class="meeting-notes-input" placeholder="把周会记录、语音转写、自然语言总结直接贴在这里，点击右上角即可自动整理到下方“风险与待协调事项”。"></textarea>
+          </div>
         </div>
         <div class="risk-board" id="riskBoard"></div>
+        <div class="matter-board" id="specialMatterBoard"></div>
       </section>
     </main>
   </div>
