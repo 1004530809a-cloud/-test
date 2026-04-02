@@ -125,6 +125,14 @@ https://你的服务地址/weekly-report.html
 https://你的服务地址/api/health
 ```
 
+返回里现在会带：
+
+- `build.buildId`
+- `build.generatedAt`
+- `build.files`
+
+Redeploy 后先对照这里的 `buildId`，再去刷新页面，能最快确认 Render 是否已经吃到最新发布包。
+
 2. 飞书快照配置检查：
 
 ```text

@@ -47,8 +47,8 @@ const sampleData = {
     { section: "core", label: "SZA预估毛利率", value: "20.26%", note: "该指标来自执行订单口径。" },
     { section: "core", label: "非SZA预估毛利率", value: "14.33%", note: "该指标来自执行订单口径。" },
     { section: "margin", label: "压价覆盖率", value: "86.67%", note: "按确认订单口径计算。" },
-    { section: "margin", label: "压价成功率", value: "26.48%", note: "按确认订单口径计算。" },
-    { section: "margin", label: "压价提升毛利率", value: "0.79%", note: "按执行订单口径计算。" },
+    { section: "margin", label: "压价成功率", value: "5.22%", note: "按确认订单口径计算。" },
+    { section: "margin", label: "压价提升毛利率", value: "0.70%", note: "按确认订单口径计算。" },
     { section: "risk", label: "待协调事项", value: "5项", note: "支持周会记录整理与专项事项补充。" }
   ],
   summaries: [
@@ -72,8 +72,8 @@ const sampleData = {
           { label: "预估毛利额", value: "2,281,690.89" },
           { label: "预估毛利率", value: "20.26%" },
           { label: "压价覆盖率", value: "86.67%" },
-          { label: "压价成功率", value: "26.48%" },
-          { label: "压价提升毛利率", value: "0.79%" }
+          { label: "压价成功率", value: "5.22%" },
+          { label: "压价提升毛利率", value: "0.70%" }
         ],
         spuBreakdown: [
           ["3C数码-手机-手机", "459", "81.79%", "21.69%"],
@@ -91,8 +91,8 @@ const sampleData = {
           { label: "预估毛利额", value: "473,765.70" },
           { label: "预估毛利率", value: "14.33%" },
           { label: "压价覆盖率", value: "78.91%" },
-          { label: "压价成功率", value: "50.86%" },
-          { label: "压价提升毛利率", value: "2.56%" }
+          { label: "压价成功率", value: "17.02%" },
+          { label: "压价提升毛利率", value: "1.30%" }
         ],
         customers: [
           ["屈臣氏", "471,211.01", "47,758.75", "10.74%"],
@@ -111,8 +111,8 @@ const sampleData = {
         links: [],
         headers: ["来源", "文件名", "说明"],
         rows: [
-          ["确认订单", "采购订单明细表-确认订单.xlsx", "用于成交金额、预估毛利额、压价覆盖率、压价成功率"],
-          ["执行订单", "采购订单明细表-执行订单.xlsx", "用于预估毛利率、压价提升毛利率"]
+          ["确认订单", "采购订单明细表-确认订单.xlsx", "用于预估毛利额、压价覆盖率、压价成功率、压价提升毛利率"],
+          ["执行订单", "采购订单明细表-执行订单.xlsx", "用于成交金额、预估毛利率"]
         ]
       }
     },
@@ -176,7 +176,7 @@ const sampleData = {
 
 const DEFAULT_DATA_URL = "./weekly-report-data.generated.json";
 const ONLINE_CONFIG_URL = "./weekly-report-online-config.json";
-const LOCAL_CACHE_KEY = "weekly-report-state-cache-v5";
+const LOCAL_CACHE_KEY = "weekly-report-state-cache-v6";
 const SZA_KEYWORD = "华为";
 const SPU_CATEGORY_HEADER = "SPU类目";
 const EXCLUDED_SPU_KEYWORD = "汽车";
@@ -196,17 +196,31 @@ const LOW_MARGIN_REASONS = [
   "未压价",
   "客户走单账号"
 ];
+const LIBRARY_SCRIPT_SOURCES = {
+  XLSX: [
+    "./xlsx.full.min.js",
+    "https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js",
+    "https://unpkg.com/xlsx/dist/xlsx.full.min.js"
+  ],
+  ExcelJS: [
+    "./exceljs.min.js",
+    "https://cdn.jsdelivr.net/npm/exceljs/dist/exceljs.min.js",
+    "https://unpkg.com/exceljs/dist/exceljs.min.js"
+  ]
+};
 const REQUIRED_HEADERS = {
   advertiser: "广告主名称",
   purchaseOrderNo: "采购订单编号",
   execPriceTax: "执行价(含税)",
   grossProfit: "预估订单毛利额",
   grossMargin: "预估订单毛利率",
+  actualIncomeTax: "订单实际收入(含税)",
   actualIncomeNoTax: "订单实际收入(去税)",
   priceResult: "压价结果",
   rebateTaxThird: "应约时返点金额含税(三方)",
   rebateTaxNonThird: "应约时返点金额含税(非三方)",
   rebateTaxPlatform: "应约时返点金额含税(平台)",
+  rebateTaxEstimate: "预估返点额含税",
   rebateNoTaxEstimate: "预估返点额不含税",
   spuCategory: SPU_CATEGORY_HEADER,
   ownerMedia: "行业媒介"
@@ -229,6 +243,7 @@ const DEFAULT_BODY_STYLE = {
 
 const state = JSON.parse(JSON.stringify(sampleData));
 let executeExportContext = null;
+const libraryLoadPromises = new Map();
 const runtime = {
   onlineEnabled: false,
   onlineMode: "offline",
@@ -244,7 +259,12 @@ const runtime = {
   pendingStatePayload: null,
   lastSyncedAt: "",
   hasPendingChanges: false,
-  pollTimer: null
+  pollTimer: null,
+  recoverableDraft: null,
+  recoverableDraftSavedAt: "",
+  serverReportUpdatedAt: "",
+  serverReportUpdatedBy: "",
+  lastBuildId: ""
 };
 
 const el = {
@@ -262,6 +282,7 @@ const el = {
   onlineSyncMeta: document.getElementById("onlineSyncMeta"),
   snapshotConfigMeta: document.getElementById("snapshotConfigMeta"),
   syncOnlineBtn: document.getElementById("syncOnlineBtn"),
+  recoverDraftBtn: document.getElementById("recoverDraftBtn"),
   saveSnapshotBtn: document.getElementById("saveSnapshotBtn"),
   checkSnapshotConfigBtn: document.getElementById("checkSnapshotConfigBtn"),
   refreshOnlineBtn: document.getElementById("refreshOnlineBtn"),
@@ -298,23 +319,79 @@ const el = {
   specialMatterBoard: document.getElementById("specialMatterBoard")
 };
 
+function buildLibraryRetryUrl(src) {
+  const separator = src.includes("?") ? "&" : "?";
+  return `${src}${separator}retry=${Date.now()}`;
+}
+
+function loadScriptWithRetry(src) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = buildLibraryRetryUrl(src);
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => {
+      script.remove();
+      reject(new Error(`脚本加载失败：${src}`));
+    };
+    document.head.appendChild(script);
+  });
+}
+
+async function ensureLibraryLoaded(globalName, sources) {
+  if (typeof window[globalName] !== "undefined") return window[globalName];
+  if (libraryLoadPromises.has(globalName)) return libraryLoadPromises.get(globalName);
+
+  const task = (async () => {
+    let lastError = null;
+    for (const src of sources) {
+      try {
+        await loadScriptWithRetry(src);
+        if (typeof window[globalName] !== "undefined") return window[globalName];
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error(`${globalName} 加载失败`);
+  })();
+
+  libraryLoadPromises.set(globalName, task);
+  try {
+    return await task;
+  } finally {
+    libraryLoadPromises.delete(globalName);
+  }
+}
+
+async function ensureXlsxLibraryLoaded() {
+  return ensureLibraryLoaded("XLSX", LIBRARY_SCRIPT_SOURCES.XLSX);
+}
+
+async function ensureExcelJsLibraryLoaded() {
+  return ensureLibraryLoaded("ExcelJS", LIBRARY_SCRIPT_SOURCES.ExcelJS);
+}
+
 async function init() {
   await loadOnlineConfig();
-  const restoredCacheMeta = restoreFromLocalCache();
   syncInputsFromState();
   bindControls();
   render();
   if (runtime.onlineEnabled) {
-    if (restoredCacheMeta?.hasPendingChanges) {
-      runtime.hasPendingChanges = true;
+    const cachedDraft = readLocalCachePayload();
+    await loadOnlineState({ silent: true, force: true });
+    if (cachedDraft?.report && cachedDraft?.hasPendingChanges) {
+      runtime.recoverableDraft = cachedDraft.report;
+      runtime.recoverableDraftSavedAt = cachedDraft.savedAt || "";
+      runtime.hasPendingChanges = false;
     } else {
-      if (restoredCacheMeta?.restored) {
-        clearPersistedStateCache();
-      }
-      await loadOnlineState();
+      clearPersistedStateCache();
     }
-  } else if (!restoredCacheMeta?.restored) {
-    await loadDefaultGeneratedData();
+    startOnlinePolling();
+  } else {
+    const restoredCacheMeta = restoreFromLocalCache();
+    if (!restoredCacheMeta?.restored) {
+      await loadDefaultGeneratedData();
+    }
   }
   updateOnlineSyncStatus();
 }
@@ -348,6 +425,17 @@ function bindControls() {
   el.syncOnlineBtn.addEventListener("click", () => {
     void syncOnlineReportState();
   });
+  el.recoverDraftBtn.addEventListener("click", () => {
+    if (!runtime.recoverableDraft) {
+      alert("当前没有可恢复的本地草稿。");
+      return;
+    }
+    replaceState(runtime.recoverableDraft, { persistLocal: true });
+    runtime.recoverableDraft = null;
+    runtime.recoverableDraftSavedAt = "";
+    markPendingChanges();
+    updateOnlineSyncStatus("已恢复本地草稿，请确认后再点“同步到线上”。", "pending");
+  });
   el.saveSnapshotBtn.addEventListener("click", saveSnapshotToFeishu);
   el.checkSnapshotConfigBtn.addEventListener("click", checkSnapshotConfig);
   el.meetingNotesInput.addEventListener("input", handleMeetingNotesInput);
@@ -361,7 +449,7 @@ function bindControls() {
     if (runtime.hasPendingChanges && !window.confirm("当前有未同步改动，刷新在线数据会覆盖本地内容。是否继续？")) {
       return;
     }
-    await loadOnlineState(true);
+    await loadOnlineState({ showToast: true, force: true });
   });
   el.clearCacheBtn.addEventListener("click", () => {
     try {
@@ -399,10 +487,14 @@ function getOnlineApiBase() {
   return base.replace(/\/$/, "");
 }
 
-async function loadOnlineState(showToast = false) {
+async function loadOnlineState(options = {}) {
   if (!runtime.onlineEnabled) return;
+  const { showToast = false, force = false, silent = false } = options;
+  if (runtime.hasPendingChanges && !force) return;
   try {
-    updateOnlineSyncStatus("正在拉取在线数据...", "saving");
+    if (!silent) {
+      updateOnlineSyncStatus("正在拉取在线数据...", "saving");
+    }
     const response = await fetch(`${getOnlineApiBase()}/api/report-state`, { cache: "no-store" });
     const payload = await response.json();
     if (!response.ok || !payload?.ok || !payload.report) {
@@ -410,6 +502,9 @@ async function loadOnlineState(showToast = false) {
     }
     runtime.onlineMode = payload.mode || "online";
     runtime.lastSyncedAt = payload.serverTime || "";
+    runtime.serverReportUpdatedAt = payload.reportUpdatedAt || "";
+    runtime.serverReportUpdatedBy = payload.reportUpdatedBy || "";
+    runtime.lastBuildId = payload?.build?.buildId || "";
     replaceState(payload.report, { persistLocal: false, clearPending: true });
     updateOnlineSyncStatus(showToast ? "已刷新在线数据。" : "在线数据已连接。", "online");
   } catch (error) {
@@ -455,6 +550,8 @@ async function syncOnlineReportState() {
       throw new Error(payload?.error || "在线周报同步失败");
     }
     runtime.lastSyncedAt = payload.savedAt || new Date().toISOString();
+    runtime.serverReportUpdatedAt = payload.reportUpdatedAt || runtime.lastSyncedAt;
+    runtime.serverReportUpdatedBy = payload.reportUpdatedBy || runtime.onlineConfig?.editorName || "";
     replaceState(payload.report, { persistLocal: false, clearPending: true });
     updateOnlineSyncStatus("在线周报已同步。", "online");
   } catch (error) {
@@ -507,6 +604,13 @@ function startOnlinePolling() {
     window.clearInterval(runtime.pollTimer);
     runtime.pollTimer = null;
   }
+  if (!runtime.onlineEnabled) return;
+  const intervalMs = Math.max(Number(runtime.onlineConfig?.pollIntervalMs) || 20000, 5000);
+  runtime.pollTimer = window.setInterval(() => {
+    if (document.hidden) return;
+    if (runtime.stateSyncInFlight || runtime.snapshotSaveInFlight || runtime.snapshotConfigCheckInFlight) return;
+    void loadOnlineState({ silent: true, force: false });
+  }, intervalMs);
 }
 
 function updateOnlineSyncStatus(message = "", mode = "") {
@@ -528,6 +632,8 @@ function updateOnlineSyncStatus(message = "", mode = "") {
   el.onlineSyncBadge.className = `status-badge status-${statusMode}`;
   el.syncOnlineBtn.disabled = !runtime.onlineEnabled || runtime.stateSyncInFlight || runtime.snapshotSaveInFlight || runtime.snapshotConfigCheckInFlight;
   el.syncOnlineBtn.textContent = runtime.stateSyncInFlight ? "同步中..." : "同步到线上";
+  el.recoverDraftBtn.hidden = !runtime.onlineEnabled || !runtime.recoverableDraft;
+  el.recoverDraftBtn.disabled = !runtime.onlineEnabled || runtime.stateSyncInFlight || runtime.snapshotSaveInFlight || runtime.snapshotConfigCheckInFlight;
   el.saveSnapshotBtn.disabled = !runtime.onlineEnabled || runtime.stateSyncInFlight || runtime.snapshotSaveInFlight || runtime.snapshotConfigCheckInFlight;
   if (!runtime.snapshotSaveInFlight) {
     el.saveSnapshotBtn.textContent = runtime.onlineConfig?.snapshotButtonText || "保存周报快照到飞书";
@@ -540,7 +646,9 @@ function updateOnlineSyncStatus(message = "", mode = "") {
   } else if (runtime.onlineEnabled && runtime.hasPendingChanges) {
     el.onlineSyncText.textContent = "当前改动仅保存在本地，点击“同步到线上”后才会提交。";
   } else if (runtime.onlineEnabled) {
-    el.onlineSyncText.textContent = "当前采用手动同步：页面改动先保存在本地，点“同步到线上”后才会提交。";
+    el.onlineSyncText.textContent = runtime.recoverableDraft
+      ? "当前已连接线上共享数据；检测到本地未同步草稿，如需继续请先点“恢复本地草稿”。"
+      : "当前采用手动同步：页面改动先保存在本地，点“同步到线上”后才会提交。";
   } else {
     el.onlineSyncText.textContent = "当前仍按本地 JSON / 本地缓存运行，整份周报数据不会多人实时同步。";
   }
@@ -548,7 +656,14 @@ function updateOnlineSyncStatus(message = "", mode = "") {
   if (runtime.onlineEnabled) {
     const syncLabel = runtime.lastSyncedAt ? `最近同步：${new Date(runtime.lastSyncedAt).toLocaleString("zh-CN")}` : "最近同步：尚未完成";
     const pendingLabel = runtime.hasPendingChanges ? "；本地有未同步改动" : "";
-    el.onlineSyncMeta.textContent = `模式：${runtime.onlineMode}${runtime.onlineConfig?.editorName ? `；默认填写人：${runtime.onlineConfig.editorName}` : ""}${pendingLabel}；${syncLabel}`;
+    const serverUpdatedLabel = runtime.serverReportUpdatedAt
+      ? `；线上更新：${new Date(runtime.serverReportUpdatedAt).toLocaleString("zh-CN")}${runtime.serverReportUpdatedBy ? `（${runtime.serverReportUpdatedBy}）` : ""}`
+      : "";
+    const draftLabel = runtime.recoverableDraftSavedAt
+      ? `；本地草稿时间：${new Date(runtime.recoverableDraftSavedAt).toLocaleString("zh-CN")}`
+      : "";
+    const buildLabel = runtime.lastBuildId ? `；buildId=${runtime.lastBuildId}` : "";
+    el.onlineSyncMeta.textContent = `模式：${runtime.onlineMode}${runtime.onlineConfig?.editorName ? `；默认填写人：${runtime.onlineConfig.editorName}` : ""}${pendingLabel}；${syncLabel}${serverUpdatedLabel}${draftLabel}${buildLabel}`;
     if (runtime.snapshotConfigSummary) {
       const checkedLabel = runtime.snapshotConfigCheckedAt ? `；最近检查：${new Date(runtime.snapshotConfigCheckedAt).toLocaleString("zh-CN")}` : "";
       el.snapshotConfigMeta.textContent = `飞书快照：${runtime.snapshotConfigSummary}${checkedLabel}`;
@@ -663,14 +778,10 @@ async function handleExcelGeneration() {
     return;
   }
 
-  if (typeof XLSX === "undefined") {
-    alert("Excel 解析库加载失败，请检查网络后重试。");
-    return;
-  }
-
   try {
     el.generateFromExcelBtn.disabled = true;
     el.generateFromExcelBtn.textContent = "生成中...";
+    await ensureXlsxLibraryLoaded();
 
     const [confirmRows, executeRows] = await Promise.all([
       parseExcelFile(confirmFile),
@@ -791,6 +902,9 @@ function normalizeRows(matrix, fileName) {
       const advertiser = String(row[indexMap.advertiser] || "").trim();
       const spuCategory = String(row[indexMap.spuCategory] || "").trim();
       const priceResult = String(row[indexMap.priceResult] || "").trim();
+      const rebateTaxThirdRaw = row[indexMap.rebateTaxThird] == null ? "" : String(row[indexMap.rebateTaxThird]).trim();
+      const rebateTaxNonThirdRaw = row[indexMap.rebateTaxNonThird] == null ? "" : String(row[indexMap.rebateTaxNonThird]).trim();
+      const rebateTaxPlatformRaw = row[indexMap.rebateTaxPlatform] == null ? "" : String(row[indexMap.rebateTaxPlatform]).trim();
       const rebateSum =
         toNumber(row[indexMap.rebateTaxThird]) +
         toNumber(row[indexMap.rebateTaxNonThird]) +
@@ -804,9 +918,14 @@ function normalizeRows(matrix, fileName) {
         execPriceTax: toNumber(row[indexMap.execPriceTax]),
         grossProfit: toNumber(row[indexMap.grossProfit]),
         grossMargin: toPercentNumber(row[indexMap.grossMargin]),
+        actualIncomeTax: toNumber(row[indexMap.actualIncomeTax]),
         actualIncomeNoTax: toNumber(row[indexMap.actualIncomeNoTax]),
         priceResult,
+        rebateTaxThirdRaw,
+        rebateTaxNonThirdRaw,
+        rebateTaxPlatformRaw,
         rebateSum,
+        rebateTaxEstimate: toNumber(row[indexMap.rebateTaxEstimate]),
         rebateNoTaxEstimate: toNumber(row[indexMap.rebateNoTaxEstimate]),
         ownerName: extractOwnerName(row[indexMap.ownerMedia]),
         exportFields: Object.fromEntries(
@@ -851,7 +970,7 @@ function buildReportData(confirmRows, executeRows, confirmName, executeName, con
       { title: "事项管理", copy: "风险与待协调事项支持粘贴周会记录自动整理，电子合同、自动计提和返点进度可持续同步维护。" }
     ],
     highlights: [
-      { title: "执行订单口径", copy: `成交金额、预估毛利率与提升毛利率来自：${executeName}`, section: "core-section" },
+      { title: "口径说明", copy: `成交金额、预估毛利率来自：${executeName}；压价成功率、压价提升毛利率来自：${confirmName}`, section: "core-section" },
       { title: "汽车类目已过滤", copy: `计算前已删除 ${SPU_CATEGORY_HEADER} 含“${EXCLUDED_SPU_KEYWORD}”的所有行。`, section: "margin-section" },
       { title: "非SZA客户清单", copy: "非SZA客户表展示全部客户，并按预估毛利率从低到高自动排序。", section: "core-section" }
     ],
@@ -913,7 +1032,9 @@ function calcCoreMetrics(confirmRows, executeRows, isSza) {
   const executeScope = executeRows.filter((row) => row.isSza === isSza);
   const covered = confirmScope.filter((row) => row.priceResult);
   const success = covered.filter((row) => row.priceResult === "返点有提升");
-  const executeWithRebate = executeScope.filter((row) => row.rebateSum !== 0);
+  const successRetained = success.filter((row) => hasNonZeroRebate(row));
+  const successCount = successRetained.length;
+  const confirmNonZeroRebate = confirmScope.filter((row) => hasNonZeroRebate(row));
 
   return {
     成交金额: formatMoney(sumBy(executeScope, "execPriceTax")),
@@ -921,10 +1042,10 @@ function calcCoreMetrics(confirmRows, executeRows, isSza) {
     预估毛利额: formatMoney(sumBy(confirmScope, "grossProfit")),
     预估毛利率: formatPercent(sumBy(executeScope, "grossProfit"), sumBy(executeScope, "actualIncomeNoTax")),
     压价覆盖率: formatPercent(covered.length, confirmScope.length),
-    压价成功率: formatPercent(success.length, covered.length),
+    压价成功率: formatPercent(successCount, covered.length),
     压价提升毛利率: formatPercent(
-      sumBy(executeWithRebate, "rebateNoTaxEstimate") - sumBy(executeWithRebate, "rebateSum"),
-      sumBy(executeScope, "actualIncomeNoTax")
+      sumBy(confirmNonZeroRebate, "rebateTaxEstimate") - sumBy(confirmNonZeroRebate, "rebateSum"),
+      sumBy(confirmScope, "actualIncomeTax")
     )
   };
 }
@@ -937,13 +1058,14 @@ function calcSzaSpuBreakdown(confirmRows, executeRows) {
     const executeScope = executeRows.filter((row) => row.isSza && row.spuCategory === category);
     const covered = confirmScope.filter((row) => row.priceResult);
     const success = covered.filter((row) => row.priceResult === "返点有提升");
-    const executeWithRebate = executeScope.filter((row) => row.rebateSum !== 0);
+    const successRetained = success.filter((row) => hasNonZeroRebate(row));
+    const successCount = successRetained.length;
 
     return [
       category,
       String(executeScope.length),
       formatPercent(covered.length, confirmScope.length),
-      formatPercent(success.length, covered.length)
+      formatPercent(successCount, covered.length)
     ];
   }).sort((a, b) => Number(b[1]) - Number(a[1]));
 }
@@ -1104,6 +1226,21 @@ function formatMoney(value) {
 function formatPercent(numerator, denominator) {
   if (!denominator) return "0.00%";
   return `${((Number(numerator) / Number(denominator)) * 100).toFixed(2)}%`;
+}
+
+function hasRebateFieldInput(row) {
+  return ["rebateTaxThirdRaw", "rebateTaxNonThirdRaw", "rebateTaxPlatformRaw"].some((key) => {
+    const text = String(row?.[key] ?? "").trim();
+    return text !== "" && text !== "-";
+  });
+}
+
+function hasNonZeroRebate(row) {
+  return Number(row?.rebateSum || 0) !== 0;
+}
+
+function hasExplicitZeroRebate(row) {
+  return Number(row?.rebateSum || 0) === 0 && hasRebateFieldInput(row);
 }
 
 function safeRatio(numerator, denominator) {
@@ -1274,6 +1411,8 @@ function replaceState(next, options = {}) {
   if (clearPending) {
     runtime.hasPendingChanges = false;
     runtime.pendingStatePayload = null;
+    runtime.recoverableDraft = null;
+    runtime.recoverableDraftSavedAt = "";
     clearPersistedStateCache();
   }
   if (persistLocal) {
@@ -2019,13 +2158,9 @@ async function handleSpecialTableImport(event) {
   const index = Number(event.currentTarget.dataset.importSpecialItem);
   const [file] = event.currentTarget.files || [];
   if (!Number.isFinite(index) || !file) return;
-  if (typeof XLSX === "undefined") {
-    alert("Excel 导入库加载失败，请刷新页面后重试。");
-    event.currentTarget.value = "";
-    return;
-  }
 
   try {
+    await ensureXlsxLibraryLoaded();
     const buffer = await file.arrayBuffer();
     const workbook = XLSX.read(buffer, { type: "array", raw: false, defval: "" });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -2127,10 +2262,6 @@ async function exportLowMarginExcel() {
     window.open(feedbackFileHref, "_blank");
     return;
   }
-  if (typeof ExcelJS === "undefined") {
-    alert("Excel 导出库加载失败，请刷新页面后重试。");
-    return;
-  }
   const orders = state.sections.margin.orders || [];
   if (!orders.length) {
     alert("当前没有低毛利订单可导出。");
@@ -2152,6 +2283,7 @@ async function exportLowMarginExcel() {
   el.exportLowMarginExcelBtn.textContent = "导出中...";
 
   try {
+    await ensureExcelJsLibraryLoaded();
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet("低毛利订单反馈表", {
       views: [{ state: "frozen", ySplit: 1 }]
@@ -2283,12 +2415,9 @@ async function saveSnapshotToFeishu() {
 async function importLowMarginExcel(event) {
   const [file] = event.target.files || [];
   if (!file) return;
-  if (typeof XLSX === "undefined") {
-    alert("Excel 导入库加载失败，请刷新页面后重试。");
-    return;
-  }
 
   try {
+    await ensureXlsxLibraryLoaded();
     const buffer = await file.arrayBuffer();
     const workbook = XLSX.read(buffer, { type: "array" });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -2343,7 +2472,7 @@ function extractOwnerName(value) {
 function persistStateToLocalCache(options = {}) {
   try {
     const payload = {
-      version: 2,
+      version: 3,
       hasPendingChanges: Boolean(options.hasPendingChanges ?? runtime.hasPendingChanges),
       savedAt: new Date().toISOString(),
       report: state
@@ -2362,26 +2491,29 @@ function clearPersistedStateCache() {
   }
 }
 
-function restoreFromLocalCache() {
+function readLocalCachePayload() {
   try {
     const cached = localStorage.getItem(LOCAL_CACHE_KEY);
-    if (!cached) return { restored: false, hasPendingChanges: false };
+    if (!cached) return null;
     const parsed = JSON.parse(cached);
-    const isWrappedCache = parsed && typeof parsed === "object" && parsed.version === 2 && parsed.report;
-    const cachedReport = isWrappedCache ? parsed.report : parsed;
-    const hasPendingChanges = isWrappedCache ? Boolean(parsed.hasPendingChanges) : !runtime.onlineEnabled;
-
-    if (runtime.onlineEnabled && !hasPendingChanges) {
-      return { restored: false, hasPendingChanges: false, legacyCache: !isWrappedCache };
-    }
-
-    Object.keys(state).forEach((key) => delete state[key]);
-    Object.assign(state, cachedReport);
-    return { restored: true, hasPendingChanges };
+    const isWrappedCache = parsed && typeof parsed === "object" && [2, 3].includes(parsed.version) && parsed.report;
+    return {
+      report: isWrappedCache ? parsed.report : parsed,
+      hasPendingChanges: isWrappedCache ? Boolean(parsed.hasPendingChanges) : !runtime.onlineEnabled,
+      savedAt: isWrappedCache ? String(parsed.savedAt || "").trim() : "",
+      version: isWrappedCache ? parsed.version : 1
+    };
   } catch (error) {
-    // Ignore invalid cache and continue with bundled data.
-    return { restored: false, hasPendingChanges: false };
+    return null;
   }
+}
+
+function restoreFromLocalCache() {
+  const cached = readLocalCachePayload();
+  if (!cached?.report) return { restored: false, hasPendingChanges: false };
+  Object.keys(state).forEach((key) => delete state[key]);
+  Object.assign(state, cached.report);
+  return { restored: true, hasPendingChanges: Boolean(cached.hasPendingChanges) };
 }
 
 function importDataFile(event) {

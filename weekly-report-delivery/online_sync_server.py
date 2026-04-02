@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -39,6 +40,15 @@ LOW_MARGIN_REASONS = [
     "客户走单账号",
 ]
 
+BUILD_FINGERPRINT_FILES = [
+    "weekly-report.html",
+    "weekly-report.js",
+    "weekly-report.css",
+    "weekly-report-data.generated.json",
+    "online_sync_server.py",
+    "build_weekly_report_json.py",
+]
+
 
 def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
@@ -59,6 +69,46 @@ def mask_token(value: Any) -> str:
     if len(text) <= 8:
         return text
     return f"{text[:4]}...{text[-4:]}"
+
+
+def file_sha1(path: Path) -> str:
+    digest = hashlib.sha1()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def build_deploy_fingerprint(base_dir: Path) -> dict:
+    file_entries = []
+    combined_digest = hashlib.sha1()
+    latest_mtime = 0.0
+
+    for relative_name in BUILD_FINGERPRINT_FILES:
+        path = base_dir / relative_name
+        if not path.exists() or not path.is_file():
+            continue
+        sha1 = file_sha1(path)
+        mtime = path.stat().st_mtime
+        combined_digest.update(relative_name.encode("utf-8"))
+        combined_digest.update(sha1.encode("utf-8"))
+        file_entries.append(
+            {
+                "name": relative_name,
+                "sha1": sha1[:12],
+                "modifiedAt": datetime.fromtimestamp(mtime).astimezone().isoformat(timespec="seconds"),
+            }
+        )
+        latest_mtime = max(latest_mtime, mtime)
+
+    return {
+        "buildId": combined_digest.hexdigest()[:12] if file_entries else "",
+        "generatedAt": datetime.fromtimestamp(latest_mtime).astimezone().isoformat(timespec="seconds") if latest_mtime else "",
+        "files": file_entries,
+    }
 
 
 def build_snapshot_log_context(config: dict | None, config_source: str, report: dict | None = None) -> dict:
@@ -211,6 +261,9 @@ class ReasonRepository:
         self.store_path.parent.mkdir(parents=True, exist_ok=True)
         self.store_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def build_deploy_meta(self) -> dict:
+        return build_deploy_fingerprint(self.data_path.resolve().parent)
+
     def load_shared_report(self) -> dict | None:
         store = self.load_store()
         report = store.get("shared_report")
@@ -225,6 +278,13 @@ class ReasonRepository:
         if editor:
             store["shared_report_updated_by"] = editor
         self.save_store(store)
+
+    def get_shared_report_meta(self) -> dict:
+        store = self.load_store()
+        return {
+            "updatedAt": str(store.get("shared_report_updated_at") or "").strip(),
+            "updatedBy": str(store.get("shared_report_updated_by") or "").strip(),
+        }
 
     def get_feishu_config_source(self) -> str:
         if os.environ.get("FEISHU_SYNC_CONFIG_JSON", "").strip():
@@ -484,7 +544,13 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/api/health":
-            return self.send_json({"ok": True, "now": now_iso()})
+            return self.send_json(
+                {
+                    "ok": True,
+                    "now": now_iso(),
+                    "build": self.repository.build_deploy_meta(),
+                }
+            )
         if parsed.path == "/api/feishu-config-check":
             return self.handle_feishu_config_check()
         if parsed.path == "/api/report-state":
@@ -531,12 +597,16 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
     def handle_report_state(self):
         try:
             report = self.repository.build_report_data()
+            shared_meta = self.repository.get_shared_report_meta()
             self.send_json(
                 {
                     "ok": True,
                     "mode": "feishu" if self.repository.load_feishu_config() else "local-store",
                     "report": report,
                     "serverTime": now_iso(),
+                    "reportUpdatedAt": shared_meta.get("updatedAt", ""),
+                    "reportUpdatedBy": shared_meta.get("updatedBy", ""),
+                    "build": self.repository.build_deploy_meta(),
                 }
             )
         except Exception as exc:
@@ -646,6 +716,7 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
             changed_at = now_iso()
             self.repository.save_shared_report(report, changed_at=changed_at, editor=editor)
             fresh = self.repository.build_report_data()
+            shared_meta = self.repository.get_shared_report_meta()
             self.send_json(
                 {
                     "ok": True,
@@ -653,6 +724,8 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
                     "savedAt": changed_at,
                     "mode": "feishu" if self.repository.load_feishu_config() else "local-store",
                     "report": fresh,
+                    "reportUpdatedAt": shared_meta.get("updatedAt", ""),
+                    "reportUpdatedBy": shared_meta.get("updatedBy", ""),
                 }
             )
         except Exception as exc:
