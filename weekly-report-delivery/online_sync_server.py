@@ -13,10 +13,12 @@ from urllib.parse import parse_qs, urlparse
 
 from sync_to_feishu import (
     attach_pdf_to_snapshot_record,
+    build_low_margin_existing_map,
     build_reason_summary,
     get_field_type_label,
     get_tenant_access_token,
     load_low_margin_reason_details,
+    low_margin_existing_to_reason_details,
     sync_snapshot,
     upload_pdf_to_bitable,
     upload_pdf_to_feishu_drive,
@@ -286,6 +288,20 @@ class ReasonRepository:
             "updatedBy": str(store.get("shared_report_updated_by") or "").strip(),
         }
 
+    def extract_reason_details_from_report(self, report: dict) -> dict[str, dict]:
+        result: dict[str, dict] = {}
+        orders = report.get("sections", {}).get("margin", {}).get("orders", [])
+        for order in orders:
+            order_no = str(order.get("purchaseOrderNo") or "").strip()
+            if not order_no:
+                continue
+            result[order_no] = {
+                "reason": normalize_reason(order.get("reason")),
+                "reasonEditor": normalize_reason(order.get("reasonEditor")),
+                "reasonUpdatedAt": normalize_reason(order.get("reasonUpdatedAt")),
+            }
+        return result
+
     def get_feishu_config_source(self) -> str:
         if os.environ.get("FEISHU_SYNC_CONFIG_JSON", "").strip():
             return "env_json"
@@ -390,6 +406,7 @@ class ReasonRepository:
         config = self.load_feishu_config()
         if config:
             access_token = get_tenant_access_token(config["app_id"], config["app_secret"])
+            existing_reason_records = build_low_margin_existing_map(config, access_token)
             upsert_low_margin_reason(
                 config=config,
                 access_token=access_token,
@@ -398,10 +415,13 @@ class ReasonRepository:
                 reason=reason,
                 reason_editor=editor,
                 reason_updated_at=changed_at,
+                existing=existing_reason_records,
             )
-            merged_data = self.build_report_data()
+            report = self.load_shared_report() or self.load_base_data()
+            reason_details = low_margin_existing_to_reason_details(config, period, existing_reason_records)
+            merged_data = self.build_report_data(base_report=report, reason_details=reason_details)
             self.save_shared_report(merged_data, changed_at=changed_at, editor=editor)
-            sync_snapshot(merged_data, config, access_token)
+            sync_snapshot(merged_data, config, access_token, low_margin_existing=existing_reason_records)
             return
         existing = self.load_reason_details(period).get(order["purchaseOrderNo"], {})
         self.append_local_history(
@@ -455,6 +475,7 @@ class ReasonRepository:
         config = self.load_feishu_config()
         if config:
             access_token = get_tenant_access_token(config["app_id"], config["app_secret"])
+            existing_reason_records = build_low_margin_existing_map(config, access_token)
             for item in normalized_updates:
                 upsert_low_margin_reason(
                     config=config,
@@ -464,10 +485,12 @@ class ReasonRepository:
                     reason=item["reason"],
                     reason_editor=editor,
                     reason_updated_at=changed_at,
+                    existing=existing_reason_records,
                 )
-            merged_data = self.build_report_data()
+            reason_details = low_margin_existing_to_reason_details(config, period, existing_reason_records)
+            merged_data = self.build_report_data(base_report=report, reason_details=reason_details)
             self.save_shared_report(merged_data, changed_at=changed_at, editor=editor)
-            sync_snapshot(merged_data, config, access_token)
+            sync_snapshot(merged_data, config, access_token, low_margin_existing=existing_reason_records)
             return merged_data, len(normalized_updates)
 
         store = self.load_store()
@@ -491,15 +514,24 @@ class ReasonRepository:
                 "reasonUpdatedAt": changed_at,
             }
         self.save_store(store)
-        merged_data = self.build_report_data()
+        merged_data = self.build_report_data(base_report=report, reason_details=existing_details)
         self.save_shared_report(merged_data, changed_at=changed_at, editor=editor)
         return merged_data, len(normalized_updates)
 
-    def build_report_data(self) -> dict:
-        report = self.load_shared_report() or self.load_base_data()
+    def build_report_data(self, base_report: dict | None = None, reason_details: dict[str, dict] | None = None) -> dict:
+        shared_report = None
+        if isinstance(base_report, dict):
+            report = deepcopy(base_report)
+        else:
+            shared_report = self.load_shared_report()
+            report = shared_report or self.load_base_data()
         orders = report.get("sections", {}).get("margin", {}).get("orders", [])
         period = str(report.get("period", "")).strip()
-        reason_details = self.load_reason_details(period)
+        if reason_details is None:
+            if shared_report is not None:
+                reason_details = self.extract_reason_details_from_report(report)
+            else:
+                reason_details = self.load_reason_details(period)
         history = []
         if not self.load_feishu_config():
             store = self.load_store()
@@ -715,7 +747,10 @@ class OnlineSyncHandler(SimpleHTTPRequestHandler):
             editor = normalize_reason(payload.get("editor")) or "网页协作"
             changed_at = now_iso()
             self.repository.save_shared_report(report, changed_at=changed_at, editor=editor)
-            fresh = self.repository.build_report_data()
+            fresh = self.repository.build_report_data(
+                base_report=report,
+                reason_details=self.repository.extract_reason_details_from_report(report),
+            )
             shared_meta = self.repository.get_shared_report_meta()
             self.send_json(
                 {

@@ -172,6 +172,13 @@ def build_existing_map(app_token: str, table_id: str, access_token: str, key_fie
     return existing
 
 
+def build_low_margin_existing_map(config: dict, access_token: str) -> dict:
+    table_id = config["tables"]["low_margin_feedback"]
+    field_map = config["fields"]["low_margin_feedback"]
+    view_id = config.get("views", {}).get("low_margin_feedback", "")
+    return build_existing_map(config["app_token"], table_id, access_token, field_map["key"], view_id=view_id)
+
+
 def get_field_type_label(field_type: int) -> str:
     labels = {
         1: "多行文本",
@@ -260,12 +267,13 @@ def current_unix_ms() -> int:
     return int(datetime.now().timestamp() * 1000)
 
 
-def merge_low_margin_reasons(data: dict, config: dict, access_token: str):
+def merge_low_margin_reasons(data: dict, config: dict, access_token: str, existing: dict | None = None):
     table_id = config["tables"]["low_margin_feedback"]
     field_map = config["fields"]["low_margin_feedback"]
     view_id = config.get("views", {}).get("low_margin_feedback", "")
     key_field = field_map["key"]
-    existing = build_existing_map(config["app_token"], table_id, access_token, key_field, view_id=view_id)
+    if existing is None:
+        existing = build_existing_map(config["app_token"], table_id, access_token, key_field, view_id=view_id)
     composite_key_enabled = key_field != field_map["purchase_order_no"]
     merged_orders = []
 
@@ -338,13 +346,10 @@ def sync_low_margin(data: dict, config: dict, access_token: str):
             create_record(config["app_token"], table_id, access_token, fields)
 
 
-def load_low_margin_reason_details(config: dict, access_token: str, period: str) -> dict:
-    table_id = config["tables"]["low_margin_feedback"]
+def low_margin_existing_to_reason_details(config: dict, period: str, existing: dict) -> dict:
     field_map = config["fields"]["low_margin_feedback"]
-    view_id = config.get("views", {}).get("low_margin_feedback", "")
     editor_field = field_map.get("reason_editor", "")
     updated_at_field = field_map.get("reason_updated_at", "")
-    existing = build_existing_map(config["app_token"], table_id, access_token, field_map["key"], view_id=view_id)
     result = {}
     composite_key_enabled = field_map["key"] != field_map["purchase_order_no"]
 
@@ -367,6 +372,12 @@ def load_low_margin_reason_details(config: dict, access_token: str, period: str)
     return result
 
 
+def load_low_margin_reason_details(config: dict, access_token: str, period: str, existing: dict | None = None) -> dict:
+    if existing is None:
+        existing = build_low_margin_existing_map(config, access_token)
+    return low_margin_existing_to_reason_details(config, period, existing)
+
+
 def upsert_low_margin_reason(
     config: dict,
     access_token: str,
@@ -375,13 +386,15 @@ def upsert_low_margin_reason(
     reason: str,
     reason_editor: str = "",
     reason_updated_at: str = "",
+    existing: dict | None = None,
 ):
     table_id = config["tables"]["low_margin_feedback"]
     field_map = config["fields"]["low_margin_feedback"]
     view_id = config.get("views", {}).get("low_margin_feedback", "")
     key_field = field_map["key"]
     composite_key_enabled = key_field != field_map["purchase_order_no"]
-    existing = build_existing_map(config["app_token"], table_id, access_token, key_field, view_id=view_id)
+    if existing is None:
+        existing = build_existing_map(config["app_token"], table_id, access_token, key_field, view_id=view_id)
     record_key = f'{period}::{order["purchaseOrderNo"]}' if composite_key_enabled else order["purchaseOrderNo"]
     existing_item = existing.get(record_key, {})
     fields = {
@@ -404,11 +417,18 @@ def upsert_low_margin_reason(
         fields[key_field] = record_key
     if existing_item.get("record_id"):
         update_record(config["app_token"], table_id, existing_item["record_id"], access_token, fields)
+        record_id = existing_item["record_id"]
     else:
-        create_record(config["app_token"], table_id, access_token, fields)
+        created = create_record(config["app_token"], table_id, access_token, fields)
+        record_id = str(created.get("record_id") or created.get("id") or "")
+    existing[record_key] = {
+        "record_id": record_id,
+        "fields": fields,
+    }
+    return existing[record_key]
 
 
-def sync_snapshot(data: dict, config: dict, access_token: str):
+def sync_snapshot(data: dict, config: dict, access_token: str, low_margin_existing: dict | None = None):
     table_id = config["tables"]["weekly_snapshot"]
     field_map = config["fields"]["weekly_snapshot"]
     view_id = config.get("views", {}).get("weekly_snapshot", "")
@@ -416,7 +436,7 @@ def sync_snapshot(data: dict, config: dict, access_token: str):
     existing = build_existing_map(config["app_token"], table_id, access_token, key_field, view_id=view_id)
     sync_time = current_unix_ms()
     metrics = metrics_to_map(data["metrics"])
-    merged_orders = merge_low_margin_reasons(data, config, access_token)
+    merged_orders = merge_low_margin_reasons(data, config, access_token, existing=low_margin_existing)
     reason_summary, filled_count, unfilled_count = build_reason_summary(merged_orders)
     low_margin_amount = metrics.get("低毛利成交金额", "")
 
